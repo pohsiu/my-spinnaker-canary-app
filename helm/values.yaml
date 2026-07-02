@@ -1,0 +1,16 @@
+appName: my-web-service
+track: production
+replicaCount: 3
+image:
+  repository: your-docker-hub-repo/my-web-service
+  tag: stable
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+service:
+  port: 3000
+  type: ClusterIP

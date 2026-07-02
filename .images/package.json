@@ -1,0 +1,13 @@
+{
+  "name": "my-spinnaker-canary-app",
+  "version": "1.0.0",
+  "description": "Demo web service instrumented with Prometheus metrics for Spinnaker/Kayenta canary analysis",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "prom-client": "^15.1.3"
+  }
+}

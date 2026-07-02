@@ -1,0 +1,56 @@
+{
+  "application": "my-web-service",
+  "name": "Helm-Canary-Deploy-Pipeline",
+  "triggers": [
+    {
+      "enabled": true,
+      "type": "docker",
+      "registry": "index.docker.io",
+      "repository": "your-docker-hub-repo/my-web-service",
+      "tag": ""
+    }
+  ],
+  "stages": [
+    {
+      "name": "Deploy Canary & Baseline",
+      "type": "bakeManifest",
+      "description": "Render the Helm chart and deploy the canary/baseline test groups",
+      "refId": "1",
+      "templateRenderer": "HELM3",
+      "overrides": {
+        "track": "canary",
+        "image.tag": "${trigger.tag}"
+      }
+    },
+    {
+      "name": "Kayenta Canary Analysis",
+      "type": "canaryAnalysis",
+      "refId": "2",
+      "requisiteStageRefIds": ["1"],
+      "context": {
+        "canaryConfig": {
+          "canaryConfigId": "my-web-service-kayenta-config",
+          "lifetimeDuration": "PT30M",
+          "metricsAccountName": "my-prometheus-account"
+        },
+        "scoreThresholds": {
+          "marginal": "75",
+          "pass": "90"
+        }
+      }
+    },
+    {
+      "name": "Promote to Production",
+      "type": "deployManifest",
+      "refId": "3",
+      "requisiteStageRefIds": ["2"],
+      "description": "After Kayenta passes, roll the change out to production",
+      "manifestArtifactAccount": "kubernetes",
+      "source": "text",
+      "overrides": {
+        "track": "production",
+        "image.tag": "${trigger.tag}"
+      }
+    }
+  ]
+}

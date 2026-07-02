@@ -1,0 +1,45 @@
+const express = require('express');
+const client = require('prom-client');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+client.collectDefaultMetrics();
+
+const httpRequestDurationMicroseconds = new client.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'code'],
+  buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5]
+});
+
+const httpRequestsTotal = new client.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'code']
+});
+
+app.get('/', (req, res) => {
+  const end = httpRequestDurationMicroseconds.startTimer();
+
+  const isError = Math.random() < 0.02;
+  setTimeout(() => {
+    const code = isError ? 500 : 200;
+    if (isError) {
+      res.status(500).send('Internal Server Error');
+    } else {
+      res.send('Hello World from Web Service!');
+    }
+    end({ method: 'GET', route: '/', code });
+    httpRequestsTotal.inc({ method: 'GET', route: '/', code });
+  }, Math.random() * 200);
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
+});
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
