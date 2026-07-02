@@ -17,7 +17,7 @@ by `.github/workflows/pages.yml` on every push to `main` that touches `site/`)
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24+
 - Docker (only needed for building the container image)
 - A Kubernetes cluster + Spinnaker/Kayenta install (only needed for the canary
   pipeline; not required for local development)

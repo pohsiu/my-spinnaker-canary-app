@@ -1,4 +1,4 @@
-FROM node:20-alpine AS frontend-build
+FROM node:24-alpine AS frontend-build
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY apps/frontend/package.json apps/frontend/package.json
@@ -7,7 +7,7 @@ RUN npm ci --workspace=frontend
 COPY apps/frontend apps/frontend
 RUN npm run build --workspace=frontend
 
-FROM node:20-alpine
+FROM node:24-alpine
 WORKDIR /app
 COPY apps/backend/package.json ./
 RUN npm install --omit=dev
