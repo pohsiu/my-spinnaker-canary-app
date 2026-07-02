@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const client = require('prom-client');
 
@@ -19,25 +20,37 @@ const httpRequestsTotal = new client.Counter({
   labelNames: ['method', 'route', 'code']
 });
 
-app.get('/', (req, res) => {
+app.get('/api/hello', (req, res) => {
   const end = httpRequestDurationMicroseconds.startTimer();
 
   const isError = Math.random() < 0.02;
   setTimeout(() => {
     const code = isError ? 500 : 200;
     if (isError) {
-      res.status(500).send('Internal Server Error');
+      res.status(500).json({ error: 'Internal Server Error' });
     } else {
-      res.send('Hello World from Web Service!');
+      res.json({ message: 'Hello World from the backend!' });
     }
-    end({ method: 'GET', route: '/', code });
-    httpRequestsTotal.inc({ method: 'GET', route: '/', code });
+    end({ method: 'GET', route: '/api/hello', code });
+    httpRequestsTotal.inc({ method: 'GET', route: '/api/hello', code });
   }, Math.random() * 200);
 });
 
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', client.register.contentType);
   res.end(await client.register.metrics());
+});
+
+const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
+app.use(express.static(frontendDist));
+app.get(/^(?!\/api|\/metrics).*/, (req, res) => {
+  res.sendFile(path.join(frontendDist, 'index.html'), (err) => {
+    if (err) {
+      res
+        .status(404)
+        .send('Frontend build not found — run `npm run build --workspace=frontend` first.');
+    }
+  });
 });
 
 app.listen(port, () => {
