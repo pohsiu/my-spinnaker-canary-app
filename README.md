@@ -8,8 +8,12 @@ apps/frontend/   # Vite + React SPA (dev hot server / prod static bundle)
 apps/backend/    # Express API + Prometheus metrics; serves the built SPA in prod
 helm/            # Helm chart (production/baseline/canary via .Values.track)
 spinnaker/       # Dinghyfile pipeline-as-code + Kayenta canary metric config
+site/            # Architecture/flow write-up, published via GitHub Pages
 turbo.json       # Turborepo task pipeline (dev/build/lint across apps)
 ```
+
+Architecture write-up: https://pohsiu.github.io/my-spinnaker-canary-app/ (deployed
+by `.github/workflows/pages.yml` on every push to `main` that touches `site/`)
 
 ## Prerequisites
 
