@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>my-spinnaker-canary-app — 架構與流程說明</title>
+<meta name="description" content="Web 服務 + Helm Chart + Spinnaker Pipeline-as-Code 的整合架構與金絲雀部署流程說明" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%23D6A419'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --paper:#F1F3F0;
+    --paper-raised:#E8EBE4;
+    --ink:#1B231F;
+    --ink-soft:#4A554C;
+    --accent:#B8860B;
+    --accent-strong:#8F6607;
+    --accent-tint:#F1E1B4;
+    --teal:#2F6E68;
+    --teal-tint:#DCEBE9;
+    --border:#D3D8CD;
+    --code-bg:#1B231F;
+    --code-fg:#E7E2D2;
+    --pass:#2E7D46;
+    --pass-tint:#DEEEE1;
+    --marginal:#A86A16;
+    --marginal-tint:#F3E4C9;
+    --fail:#A8402F;
+    --fail-tint:#F3DCD6;
+    --track-canary:#B8860B;
+    --track-baseline:#5B6B63;
+    --track-production:#2F6E68;
+    --font-display:'Sora', system-ui, sans-serif;
+    --font-body:'IBM Plex Sans', system-ui, sans-serif;
+    --font-mono:'IBM Plex Mono', ui-monospace, monospace;
+  }
+
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  @media (prefers-reduced-motion: reduce){
+    html{scroll-behavior:auto;}
+    *{animation-duration:0.01ms !important; transition-duration:0.01ms !important;}
+  }
+
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--font-body);
+    font-size:16px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  a{color:var(--teal); text-decoration-thickness:1.5px; text-underline-offset:2px;}
+  a:hover{color:var(--accent-strong);}
+  a:focus-visible, button:focus-visible, summary:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:3px;
+    border-radius:2px;
+  }
+
+  code, kbd{
+    font-family:var(--font-mono);
+    font-size:0.88em;
+    background:var(--paper-raised);
+    border:1px solid var(--border);
+    border-radius:4px;
+    padding:0.05em 0.4em;
+  }
+
+  pre{
+    background:var(--code-bg);
+    color:var(--code-fg);
+    border-radius:10px;
+    padding:1.1rem 1.3rem;
+    overflow-x:auto;
+    font-family:var(--font-mono);
+    font-size:0.86rem;
+    line-height:1.6;
+  }
+  pre code{background:none; border:none; padding:0; color:inherit; font-size:1em;}
+
+  h1,h2,h3,h4{
+    font-family:var(--font-display);
+    color:var(--ink);
+    text-wrap:balance;
+    margin:0 0 0.6em;
+    line-height:1.2;
+  }
+
+  .layout{
+    max-width:1180px;
+    margin:0 auto;
+    display:grid;
+    grid-template-columns:230px minmax(0,1fr);
+    gap:3.5rem;
+    padding:0 2rem;
+  }
+
+  /* ---------- Header / Hero ---------- */
+  header.hero{
+    border-bottom:1px solid var(--border);
+    padding:3.6rem 2rem 3rem;
+  }
+  .hero-inner{
+    max-width:1180px;
+    margin:0 auto;
+    display:grid;
+    grid-template-columns:230px minmax(0,1fr);
+    gap:3.5rem;
+  }
+  .hero-inner .spacer{}
+  .eyebrow{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--accent-strong);
+    display:flex;
+    align-items:center;
+    gap:0.55rem;
+    margin-bottom:1rem;
+  }
+  .eyebrow::before{
+    content:"";
+    width:9px; height:9px;
+    background:var(--accent);
+    border-radius:50%;
+    display:inline-block;
+    box-shadow:0 0 0 3px var(--accent-tint);
+  }
+  h1.title{
+    font-size:clamp(2rem, 3.4vw, 2.9rem);
+    font-weight:800;
+    max-width:22ch;
+  }
+  .subtitle{
+    font-size:1.13rem;
+    color:var(--ink-soft);
+    max-width:60ch;
+    margin:0 0 1.6rem;
+  }
+  .meta-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:0.5rem;
+  }
+  .pill{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    padding:0.32rem 0.75rem;
+    border-radius:999px;
+    border:1px solid var(--border);
+    background:var(--paper-raised);
+    color:var(--ink-soft);
+  }
+  .repo-link{
+    display:inline-flex;
+    align-items:center;
+    gap:0.4rem;
+    margin-top:1.7rem;
+    font-family:var(--font-mono);
+    font-size:0.92rem;
+    font-weight:500;
+  }
+
+  /* ---------- Nav ---------- */
+  nav.toc{
+    position:sticky;
+    top:2.5rem;
+    align-self:start;
+    font-size:0.9rem;
+  }
+  nav.toc .toc-label{
+    font-family:var(--font-mono);
+    font-size:0.72rem;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+    margin-bottom:0.9rem;
+    display:block;
+  }
+  nav.toc ol{
+    list-style:none;
+    margin:0;
+    padding:0;
+    border-left:2px solid var(--border);
+  }
+  nav.toc li{margin:0;}
+  nav.toc a{
+    display:block;
+    padding:0.42rem 0 0.42rem 1rem;
+    margin-left:-2px;
+    border-left:2px solid transparent;
+    color:var(--ink-soft);
+    text-decoration:none;
+    transition:color .15s ease, border-color .15s ease;
+  }
+  nav.toc a:hover{color:var(--ink); border-left-color:var(--border);}
+  nav.toc a.active{
+    color:var(--accent-strong);
+    border-left-color:var(--accent);
+    font-weight:600;
+  }
+
+  /* ---------- Main content ---------- */
+  main{
+    padding:3.5rem 0 6rem;
+    min-width:0;
+  }
+  section{
+    padding-bottom:3.6rem;
+    margin-bottom:3.6rem;
+    border-bottom:1px solid var(--border);
+    max-width:700px;
+  }
+  section:last-of-type{border-bottom:none;}
+  section.wide{max-width:none;}
+
+  .section-num{
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    color:var(--accent-strong);
+    letter-spacing:0.05em;
+  }
+  h2{font-size:1.55rem; margin-top:0.3rem;}
+  h3{font-size:1.14rem; margin-top:1.8rem;}
+  p{margin:0 0 1.1rem;}
+  ul, ol{margin:0 0 1.1rem; padding-left:1.3rem;}
+  li{margin-bottom:0.4rem;}
+  strong{font-weight:600;}
+
+  .lede{
+    font-size:1.05rem;
+    color:var(--ink-soft);
+  }
+
+  /* ---------- Architecture grid ---------- */
+  .arch-grid{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:1rem;
+    margin:1.6rem 0;
+  }
+  .arch-card{
+    background:var(--paper-raised);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:1.1rem 1.2rem;
+  }
+  .arch-card .k{
+    font-family:var(--font-mono);
+    font-size:0.72rem;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--ink-soft);
+    display:block;
+    margin-bottom:0.4rem;
+  }
+  .arch-card .v{
+    font-family:var(--font-mono);
+    font-size:0.94rem;
+    font-weight:600;
+  }
+  .arch-card p{font-size:0.88rem; color:var(--ink-soft); margin:0.5rem 0 0;}
+
+  /* ---------- Pipeline flow diagram ---------- */
+  .flow{
+    display:flex;
+    align-items:stretch;
+    gap:0;
+    overflow-x:auto;
+    padding:0.5rem 0 1.3rem;
+    margin:1.6rem 0;
+  }
+  .flow-step{
+    flex:0 0 auto;
+    width:168px;
+    background:var(--paper-raised);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:0.95rem 1rem;
+    position:relative;
+  }
+  .flow-step .n{
+    font-family:var(--font-mono);
+    font-size:0.7rem;
+    color:var(--accent-strong);
+    font-weight:600;
+  }
+  .flow-step h4{
+    font-size:0.93rem;
+    margin:0.3rem 0 0.3rem;
+  }
+  .flow-step p{
+    font-size:0.78rem;
+    color:var(--ink-soft);
+    margin:0;
+  }
+  .flow-arrow{
+    flex:0 0 auto;
+    width:34px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:var(--border);
+  }
+  .flow-arrow svg{width:22px; height:22px;}
+  .flow-step.gate{
+    background:var(--accent-tint);
+    border-color:var(--accent);
+  }
+  .flow-step.gate .n{color:var(--accent-strong);}
+
+  /* ---------- Track cards ---------- */
+  .track-grid{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:1rem;
+    margin:1.6rem 0;
+  }
+  .track-card{
+    border-radius:10px;
+    border:1px solid var(--border);
+    padding:1.15rem 1.25rem;
+    background:var(--paper-raised);
+  }
+  .track-card .dot{
+    width:10px; height:10px;
+    border-radius:50%;
+    display:inline-block;
+    margin-right:0.5rem;
+  }
+  .track-card.canary .dot{background:var(--track-canary);}
+  .track-card.baseline .dot{background:var(--track-baseline);}
+  .track-card.production .dot{background:var(--track-production);}
+  .track-card h4{
+    font-family:var(--font-mono);
+    font-size:0.92rem;
+    display:flex;
+    align-items:center;
+    margin:0 0 0.55rem;
+  }
+  .track-card p{font-size:0.85rem; color:var(--ink-soft); margin:0;}
+
+  /* ---------- Metric table ---------- */
+  .table-wrap{overflow-x:auto; margin:1.6rem 0;}
+  table{
+    border-collapse:collapse;
+    width:100%;
+    min-width:520px;
+    font-size:0.9rem;
+  }
+  th, td{
+    text-align:left;
+    padding:0.65rem 0.9rem;
+    border-bottom:1px solid var(--border);
+  }
+  th{
+    font-family:var(--font-mono);
+    font-size:0.74rem;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--ink-soft);
+    font-weight:600;
+  }
+  td.num{font-variant-numeric:tabular-nums; font-family:var(--font-mono);}
+
+  .status-pill{
+    display:inline-flex;
+    align-items:center;
+    gap:0.35rem;
+    font-family:var(--font-mono);
+    font-size:0.78rem;
+    font-weight:600;
+    padding:0.2rem 0.6rem;
+    border-radius:999px;
+  }
+  .status-pill.pass{background:var(--pass-tint); color:var(--pass);}
+  .status-pill.marginal{background:var(--marginal-tint); color:var(--marginal);}
+  .status-pill.fail{background:var(--fail-tint); color:var(--fail);}
+
+  /* ---------- Callouts ---------- */
+  .callout{
+    border:1px solid var(--border);
+    border-left:3px solid var(--teal);
+    background:var(--teal-tint);
+    border-radius:0 8px 8px 0;
+    padding:1rem 1.2rem;
+    font-size:0.92rem;
+    margin:1.6rem 0;
+  }
+  .callout.warn{
+    border-left-color:var(--accent);
+    background:var(--accent-tint);
+  }
+  .callout .label{
+    font-family:var(--font-mono);
+    font-size:0.72rem;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    font-weight:600;
+    display:block;
+    margin-bottom:0.35rem;
+  }
+  .callout.warn .label{color:var(--accent-strong);}
+  .callout:not(.warn) .label{color:var(--teal);}
+
+  /* ---------- File tree ---------- */
+  .tree{
+    font-family:var(--font-mono);
+    font-size:0.84rem;
+    line-height:1.85;
+    background:var(--code-bg);
+    color:var(--code-fg);
+    border-radius:10px;
+    padding:1.2rem 1.4rem;
+    overflow-x:auto;
+  }
+  .tree .comment{color:#8A9A8F;}
+  .tree .dir{color:var(--accent-tint);}
+
+  /* ---------- Footer ---------- */
+  footer{
+    border-top:1px solid var(--border);
+    padding:2.4rem 2rem 3rem;
+  }
+  footer .inner{
+    max-width:1180px;
+    margin:0 auto;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:1rem;
+    font-size:0.85rem;
+    color:var(--ink-soft);
+  }
+
+  @media (max-width: 880px){
+    .layout, .hero-inner{grid-template-columns:1fr;}
+    nav.toc{position:static; margin-bottom:2rem; border-bottom:1px solid var(--border); padding-bottom:1.6rem;}
+    nav.toc ol{border-left:none;}
+    .arch-grid, .track-grid{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="spacer"></div>
+    <div>
+      <span class="eyebrow">參考架構 · 金絲雀部署示範</span>
+      <h1 class="title">my-spinnaker-canary-app</h1>
+      <p class="subtitle">
+        一套完整、可實際運作的範例：從 Vite + React 前端、Express 後端，
+        到 Helm Chart 打包、再到 Spinnaker Pipeline-as-Code（Dinghy）驅動的
+        Kayenta 金絲雀分析與自動晉升。這頁說明每一層怎麼串起來、為什麼這樣設計。
+      </p>
+      <div class="meta-row">
+        <span class="pill">Vite + React</span>
+        <span class="pill">Express + Prometheus</span>
+        <span class="pill">Turborepo</span>
+        <span class="pill">Helm</span>
+        <span class="pill">Spinnaker · Dinghy</span>
+        <span class="pill">Kayenta</span>
+      </div>
+      <a class="repo-link" href="https://github.com/pohsiu/my-spinnaker-canary-app">
+        github.com/pohsiu/my-spinnaker-canary-app →
+      </a>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="目錄">
+    <span class="toc-label">目錄</span>
+    <ol>
+      <li><a href="#purpose">01 目的</a></li>
+      <li><a href="#architecture">02 架構總覽</a></li>
+      <li><a href="#dev">03 本地開發</a></li>
+      <li><a href="#build">04 打包與 Docker</a></li>
+      <li><a href="#helm">05 Helm Chart</a></li>
+      <li><a href="#pipeline">06 Spinnaker Pipeline</a></li>
+      <li><a href="#kayenta">07 Kayenta 分析</a></li>
+      <li><a href="#flow">08 端到端流程</a></li>
+      <li><a href="#config">09 部署前設定</a></li>
+      <li><a href="#structure">10 專案結構</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section id="purpose">
+      <span class="section-num">01</span>
+      <h2>目的</h2>
+      <p class="lede">
+        這個 repo 不是一個要上線的產品，而是一份「可以跑起來的教材」——
+        示範漸進式交付（progressive delivery）的完整鏈路：程式碼變更如何
+        被打包、部署成獨立的 canary 版本、由真實指標自動判定是否安全，
+        再決定要不要晉升成正式版本，全程不需要人工盯著儀表板做決定。
+      </p>
+      <p>
+        三個部分刻意分開又刻意串連：<strong>Web 服務</strong>提供會被觀測的真實流量與指標；
+        <strong>Helm Chart</strong> 讓同一份程式碼可以用 <code>track</code> 參數部署成
+        production / baseline / canary 三個獨立且不互相干擾的版本；
+        <strong>Spinnaker Pipeline-as-Code</strong> 把「部署 → 分析 → 晉升」這個決策流程
+        寫成版本控制得到的設定檔，而不是點點點的手動操作。
+      </p>
+    </section>
+
+    <section id="architecture" class="wide">
+      <span class="section-num">02</span>
+      <h2 style="max-width:700px">架構總覽</h2>
+      <p style="max-width:700px">四個各自獨立、透過慣例（convention）串接的部分：</p>
+      <div class="arch-grid">
+        <div class="arch-card">
+          <span class="k">apps/frontend</span>
+          <span class="v">Vite + React SPA</span>
+          <p>開發時走 HMR dev server；上線只產出純靜態 <code>dist/</code>，不依賴任何 Node 執行環境。</p>
+        </div>
+        <div class="arch-card">
+          <span class="k">apps/backend</span>
+          <span class="v">Express + prom-client</span>
+          <p>提供 <code>/api/*</code>、暴露 <code>/metrics</code> 給 Prometheus，正式環境下同時 serve 前端靜態檔。</p>
+        </div>
+        <div class="arch-card">
+          <span class="k">helm/</span>
+          <span class="v">單一 Chart，三種 track</span>
+          <p>用同一份 template，靠 <code>--set track=</code> 產生互不衝突的 production / canary / baseline 資源。</p>
+        </div>
+        <div class="arch-card">
+          <span class="k">spinnaker/</span>
+          <span class="v">Dinghyfile + Kayenta Config</span>
+          <p>宣告「bake → 分析 → 晉升」的流水線，以及 Kayenta 用來判定金絲雀是否健康的指標定義。</p>
+        </div>
+      </div>
+      <div class="callout">
+        <span class="label">串接方式</span>
+        Prometheus 依 Pod annotation（<code>prometheus.io/scrape</code>）自動抓取 <code>/metrics</code>；
+        Kayenta 再用 <code>track</code> label 把同一份 PromQL 查詢分別套用到 canary 與 baseline 兩組 Pod 上做比較——
+        整條鏈路沒有任何一段是寫死在程式碼裡的，全部靠 label/annotation 這種 Kubernetes 慣例動態接起來。
+      </div>
+    </section>
+
+    <section id="dev">
+      <span class="section-num">03</span>
+      <h2>本地開發</h2>
+      <p>
+        Turborepo 同時啟動兩個 app：Vite dev server（<code>:5173</code>，HMR）
+        把 <code>/api</code> 與 <code>/metrics</code> proxy 到 Express（<code>:3000</code>）。
+        開發時感受不到後端存在，但呼叫的其實是同一支 server.js。
+      </p>
+      <pre><code>npm install
+npm run dev
+# → Vite   http://localhost:5173  (HMR)
+# → Express http://localhost:3000 (/api, /metrics)</code></pre>
+    </section>
+
+    <section id="build">
+      <span class="section-num">04</span>
+      <h2>打包與 Docker</h2>
+      <p>
+        正式環境不跑 Vite，只跑 Express。前端先被打包成純靜態檔，
+        Express 直接把它當 SPA serve 出去，非 <code>/api</code>、<code>/metrics</code> 的路由
+        一律回傳 <code>index.html</code>，交給前端 router 處理。
+      </p>
+      <pre><code>npm run build --workspace=frontend
+npm start
+# Express 監聽 :3000，serve apps/frontend/dist</code></pre>
+      <p>
+        <code>apps/backend/Dockerfile</code> 用 multi-stage build：第一階段裝整個
+        workspace 只為了跑 <code>vite build</code>，第二階段只把 Express 依賴 + 打包產物
+        放進最終 image，體積不受前端 devDependencies 拖累。
+      </p>
+      <pre><code># 從 repo 根目錄建置
+docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .</code></pre>
+    </section>
+
+    <section id="helm">
+      <span class="section-num">05</span>
+      <h2>Helm Chart：三個互不衝突的 track</h2>
+      <p>
+        整個 canary 機制能成立，關鍵在於 Deployment / Service 的名稱與 selector
+        都吃 <code>.Values.track</code>，所以同一份 Chart 部署三次會產生三組完全獨立的資源：
+      </p>
+      <div class="track-grid">
+        <div class="track-card production">
+          <h4><span class="dot"></span>production</h4>
+          <p>正式流量。晉升階段會把新版本以這個 track 重新部署，取代舊版本。</p>
+        </div>
+        <div class="track-card canary">
+          <h4><span class="dot"></span>canary</h4>
+          <p>帶著新版 image 的少量副本，只在分析期間存在，接受和 baseline 對照的觀測。</p>
+        </div>
+        <div class="track-card baseline">
+          <h4><span class="dot"></span>baseline</h4>
+          <p>用「舊版但同時新建」的副本，排除掉「重啟造成的雜訊」，讓 canary 的比較基準更乾淨。</p>
+        </div>
+      </div>
+      <pre><code>helm template my-app helm/ --set track=canary --set image.tag=pr-123
+# → Deployment/Service: my-app-canary
+#   label track=canary，不會和 my-app-production 互相覆蓋</code></pre>
+    </section>
+
+    <section id="pipeline" class="wide">
+      <span class="section-num">06</span>
+      <h2 style="max-width:700px">Spinnaker Pipeline-as-Code（Dinghy）</h2>
+      <p style="max-width:700px">
+        <code>spinnaker/dinghyfile</code> 是宣告式的流水線定義，被 Dinghy 監看並自動同步成
+        Spinnaker 裡的 pipeline——流水線本身也是版本控制的一部分。三個階段：
+      </p>
+      <div class="flow">
+        <div class="flow-step">
+          <span class="n">TRIGGER</span>
+          <h4>Docker Registry</h4>
+          <p>新 image tag 被 push 時觸發流水線。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step">
+          <span class="n">STAGE 1</span>
+          <h4>Bake Manifest</h4>
+          <p>用 Helm3 渲染 Chart，以 <code>track: canary</code> 部署新版本。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step gate">
+          <span class="n">STAGE 2 · GATE</span>
+          <h4>Kayenta 分析</h4>
+          <p>30 分鐘觀測窗，比對 canary 與 baseline 指標，算出分數。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step">
+          <span class="n">STAGE 3</span>
+          <h4>Promote</h4>
+          <p>分數通過門檻後，以 <code>track: production</code> 重新部署，完成晉升。</p>
+        </div>
+      </div>
+      <p style="max-width:700px">
+        第二階段是唯一的決策點：分數沒過，流水線就停在這裡，正式環境完全不受影響——
+        這正是「金絲雀部署」相對藍綠部署的核心優勢：壞版本只影響一小群 canary Pod，
+        而且是被指標主動擋下來的，不需要人工介入。
+      </p>
+    </section>
+
+    <section id="kayenta">
+      <span class="section-num">07</span>
+      <h2>Kayenta：兩個指標，一個分數</h2>
+      <p>
+        <code>spinnaker/canary-config.json</code> 定義了兩條 PromQL，
+        分別對 <code>track=canary</code> 和 <code>track=baseline</code> 的 Pod 各查一次再比較：
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>指標</th><th>PromQL</th><th>判定方向</th><th>權重</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>HTTP 5xx Error Rate</td>
+              <td class="num"><code>rate(http_requests_total{code=~"5.."}[2m])</code></td>
+              <td>canary 上升即扣分（critical）</td>
+              <td class="num">100</td>
+            </tr>
+            <tr>
+              <td>HTTP p95 Latency</td>
+              <td class="num"><code>histogram_quantile(0.95, ...)</code></td>
+              <td>canary 上升即扣分</td>
+              <td class="num">100</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>綜合分數對應三種結果，門檻寫在 <code>dinghyfile</code> 裡：</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>分數</th><th>結果</th><th>流水線行為</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="num">≥ 90</td>
+              <td><span class="status-pill pass">PASS</span></td>
+              <td>自動晉升到 production</td>
+            </tr>
+            <tr>
+              <td class="num">75 – 89</td>
+              <td><span class="status-pill marginal">MARGINAL</span></td>
+              <td>標記待確認，不自動晉升</td>
+            </tr>
+            <tr>
+              <td class="num">&lt; 75</td>
+              <td><span class="status-pill fail">FAIL</span></td>
+              <td>流水線終止，canary 回收</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="flow" class="wide">
+      <span class="section-num">08</span>
+      <h2 style="max-width:700px">端到端流程</h2>
+      <p style="max-width:700px">把上面每一段接起來，一次程式碼變更的完整路徑：</p>
+      <div class="tree">
+<span class="comment">1.</span> 開發者 push commit
+<span class="comment">2.</span> CI 建置 <span class="dir">apps/frontend</span> + <span class="dir">apps/backend</span> → 用 <span class="dir">apps/backend/Dockerfile</span> 打成單一 image → push 到 registry
+<span class="comment">3.</span> Registry 上出現新 tag → 觸發 <span class="dir">spinnaker/dinghyfile</span> 定義的 pipeline
+<span class="comment">4.</span> Spinnaker 用 <span class="dir">helm/</span> bake 出 <span class="comment">track=canary</span> 的 manifest 並部署
+<span class="comment">5.</span> Prometheus 依 annotation 自動開始抓 canary Pod 的 <span class="comment">/metrics</span>
+<span class="comment">6.</span> Kayenta 以 <span class="dir">spinnaker/canary-config.json</span> 比對 canary / baseline 30 分鐘
+<span class="comment">7.</span> 分數 ≥ 90 → 以 <span class="comment">track=production</span> 重新部署，晉升完成
+<span class="comment">   </span> 分數 &lt; 75 → 流水線終止，正式環境未受影響
+      </div>
+    </section>
+
+    <section id="config">
+      <span class="section-num">09</span>
+      <h2>部署前必須設定的值</h2>
+      <p>這份 repo 目前是「可運作但未指向真實環境」的狀態，以下三處是 placeholder，接上真正的 Spinnaker/Kubernetes 環境前需要換掉：</p>
+      <ul>
+        <li><code>helm/values.yaml</code> → <code>image.repository</code>：換成實際的 container registry 路徑</li>
+        <li><code>spinnaker/dinghyfile</code> → <code>triggers[].repository</code>：需與上面同一個 registry 路徑</li>
+        <li><code>spinnaker/dinghyfile</code> / <code>canary-config.json</code> → <code>metricsAccountName</code>：換成 Spinnaker 裡設定好的 Prometheus 帳號名稱</li>
+      </ul>
+      <div class="callout warn">
+        <span class="label">尚未驗證</span>
+        本機沒有 Docker daemon 與 Kubernetes 叢集可用，<code>docker build</code> 與 Helm 渲染結果
+        尚未對真實環境跑過完整驗證；<code>helm lint</code> / <code>helm template</code> 已通過語法與樣板檢查。
+      </div>
+    </section>
+
+    <section id="structure">
+      <span class="section-num">10</span>
+      <h2>專案結構</h2>
+      <div class="tree">
+apps/frontend/   <span class="comment"># Vite + React SPA</span>
+apps/backend/    <span class="comment"># Express API + /metrics + serve dist/</span>
+helm/            <span class="comment"># Chart：production / canary / baseline</span>
+spinnaker/       <span class="comment"># dinghyfile + canary-config.json</span>
+turbo.json       <span class="comment"># dev/build 任務編排</span>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <div class="inner">
+    <span>my-spinnaker-canary-app · 漸進式交付參考架構</span>
+    <a href="https://github.com/pohsiu/my-spinnaker-canary-app">查看原始碼 →</a>
+  </div>
+</footer>
+
+<script>
+  // Highlight active TOC entry on scroll
+  const links = Array.from(document.querySelectorAll('nav.toc a'));
+  const targets = links.map(l => document.querySelector(l.getAttribute('href')));
+  const setActive = () => {
+    let current = targets[0];
+    const y = window.scrollY + 120;
+    targets.forEach(t => { if (t && t.offsetTop <= y) current = t; });
+    links.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + (current && current.id)));
+  };
+  document.addEventListener('scroll', setActive, { passive: true });
+  setActive();
+</script>
+
+</body>
+</html>
