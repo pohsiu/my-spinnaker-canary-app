@@ -112,6 +112,10 @@ The pipeline (`spinnaker/dinghyfile`) bakes the Helm chart with
 `HTTP p95 Latency` metrics defined in `spinnaker/canary-config.json`, and on a
 passing score (≥90) promotes the release with `track: production`.
 
+None of this has ever run against a real Spinnaker instance — to test it,
+see `others/minnaker/README.md`, a Docker Compose–packaged, disposable
+Spinnaker + Kayenta instance for exactly that.
+
 ## Retro: building the Cloudflare CDN pipeline
 
 Notes from actually deploying `cdn/` against a real Cloudflare account

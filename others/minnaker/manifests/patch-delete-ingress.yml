@@ -1,0 +1,15 @@
+# Ingress "spin-ingress" uses apiVersion networking.k8s.io/v1beta1,
+# removed in k8s 1.22+ (confirmed by an actual "no matches for kind
+# Ingress" error). We don't use it — Gate/Deck are reached via
+# `kubectl port-forward`, not Traefik ingress.
+#
+# One resource per file: a multi-document file with several `$patch:
+# delete` blocks under one `patches: - path:` entry crashed kustomize
+# (kyaml v0.18.1 segfault in PatchTransformer) — confirmed by an actual
+# crash, not assumed.
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: spin-ingress
+  namespace: spinnaker
+$patch: delete

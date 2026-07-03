@@ -1,0 +1,7 @@
+# See patch-delete-grafana-sa.yml for why.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+$patch: delete

@@ -17,6 +17,7 @@ apps/backend/    Express — /api/*, /metrics (Prometheus), serves dist/ in prod
 helm/            single Chart, track ∈ {production, canary, baseline} via --set
 spinnaker/       dinghyfile (pipeline) + canary-config.json (Kayenta metrics)
 site/            architecture doc, deployed via .github/workflows/pages.yml
+others/minnaker/ disposable Spinnaker+Kayenta via docker-compose, for testing spinnaker/* locally
 ```
 
 ## Commands
@@ -66,3 +67,12 @@ typically not running — `helm lint`/`helm template` can be verified, but
 rendered manifests can't be schema-validated against a live API server, and
 `docker build` has not been exercised end-to-end. Flag this rather than
 claiming either is fully verified.
+
+Disk space has also been observed critically low (~11GB free of ~460GB —
+run `df -h /` to recheck before assuming otherwise), which blocks actually
+running `others/minnaker/` (needs ~30GB). Its manifests, compose file, and
+bootstrap script were verified by other means instead — `kubectl kustomize`
+(manifest rendering against the real pinned upstream), `docker compose
+config` (compose syntax), `shellcheck` (bootstrap script) — not by an
+actual `docker compose up`. See `others/minnaker/README.md`'s "What this
+does NOT do" section before assuming more was verified than that.

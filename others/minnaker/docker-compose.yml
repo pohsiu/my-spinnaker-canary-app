@@ -1,0 +1,70 @@
+name: minnaker
+
+services:
+  k3s:
+    image: rancher/k3s:v1.31.4-k3s1
+    privileged: true
+    command:
+      - server
+      - --tls-san=k3s
+      - --write-kubeconfig-mode=644
+      - --write-kubeconfig=/output/kubeconfig.yaml
+      - --disable=traefik   # we reach Gate/Deck via port-forward, not ingress
+    environment:
+      - K3S_KUBECONFIG_MODE=644
+    tmpfs:
+      - /run
+      - /var/run
+    volumes:
+      - k3s-server:/var/lib/rancher/k3s
+      - kubeconfig:/output
+    restart: unless-stopped
+
+  bootstrap:
+    build: ./bootstrap
+    depends_on:
+      - k3s
+    volumes:
+      - kubeconfig:/kubeconfig-src:ro
+      - ./manifests:/manifests:ro
+    environment:
+      - KUBECONFIG_SRC=/kubeconfig-src/kubeconfig.yaml
+      - KUBECONFIG=/root/.kube/config
+    # No restart: this is meant to run once and exit 0. If it fails, fix
+    # the issue and `docker compose up bootstrap` again rather than
+    # looping silently.
+
+  port-forward:
+    build: ./bootstrap  # same kubectl+bash image; different entrypoint below
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - kubeconfig:/kubeconfig-src:ro
+    environment:
+      - KUBECONFIG_SRC=/kubeconfig-src/kubeconfig.yaml
+      - KUBECONFIG=/root/.kube/config
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        mkdir -p "$$(dirname "$$KUBECONFIG")"
+        cp "$$KUBECONFIG_SRC" "$$KUBECONFIG"
+        sed -i "s#https://127.0.0.1:6443#https://k3s:6443#" "$$KUBECONFIG"
+        echo "[port-forward] forwarding spin-gate:8084 and spin-deck:9000..."
+        while true; do
+          kubectl -n spinnaker port-forward --address 0.0.0.0 svc/spin-gate 8084:8084 &
+          kubectl -n spinnaker port-forward --address 0.0.0.0 svc/spin-deck 9000:9000 &
+          wait -n
+          echo "[port-forward] a port-forward exited, retrying in 5s..."
+          sleep 5
+        done
+    ports:
+      - "8084:8084"
+      - "9000:9000"
+    restart: unless-stopped
+
+volumes:
+  k3s-server:
+  kubeconfig:

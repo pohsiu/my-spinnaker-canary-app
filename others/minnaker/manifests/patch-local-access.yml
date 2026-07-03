@@ -1,0 +1,24 @@
+# Upstream's expose/patch-urls.yml (part of the base recipe) hardcodes
+# https://spinnaker.mycompany.com for both Gate and Deck, assuming a single
+# ingress hostname (Traefik, port 443). We reach Gate/Deck via `kubectl
+# port-forward` on separate localhost ports instead (see docker-compose.yml
+# port-forward service), so those URLs are overridden here to match.
+#
+# Not fully verified against a running cluster (see ../README.md) — Gate's
+# context-path (/api) is set independently in the base recipe's gate
+# profile and should keep working through a direct port-forward regardless
+# of this override, but the CORS pattern in particular may need adjustment
+# once this is actually exercised end-to-end.
+apiVersion: spinnaker.armory.io/v1alpha2
+kind: SpinnakerService
+metadata:
+  name: spinnaker
+spec:
+  spinnakerConfig:
+    config:
+      security:
+        apiSecurity:
+          overrideBaseUrl: http://localhost:8084/api
+          corsAccessPattern: http://localhost:9000
+        uiSecurity:
+          overrideBaseUrl: http://localhost:9000

@@ -1,0 +1,30 @@
+# Reproduces minnaker's own recipe for a disposable Spinnaker + Kayenta
+# instance, pinned to a specific upstream commit (not a moving branch).
+#
+# Pinned ref: armory/spinnaker-kustomize-patches@50a095cd9aa1a83723f4cc09d6e5a78c6d96d17e
+# (minnaker branch, HEAD as of this pin — see ../README.md for how to bump it)
+#
+# Upstream's own kustomization-minnaker.yml leaves Kayenta/Prometheus
+# resources commented out (marked TODO in their source). We add them here
+# ourselves — see patch-canary-storage.yml for the Kayenta account config
+# (Prometheus for metrics + Minio for the config/object store Kayenta
+# also requires, which upstream's recipe has no example of at all).
+resources:
+  # Repo root, not recipes/ — the repo root's kustomization.yml is a
+  # symlink to recipes/kustomization-minnaker.yml (kustomize's remote-base
+  # fetch requires a default-named kustomization file at the target path).
+  - github.com/armory/spinnaker-kustomize-patches?ref=50a095cd9aa1a83723f4cc09d6e5a78c6d96d17e
+  - github.com/armory/spinnaker-kustomize-patches/infrastructure/prometheus-grafana?ref=50a095cd9aa1a83723f4cc09d6e5a78c6d96d17e
+
+patches:
+  - path: patch-canary-storage.yml
+  - path: patch-local-access.yml
+  - path: patch-delete-ingress.yml
+  - path: patch-delete-grafana-sa.yml
+  - path: patch-delete-grafana-deployment.yml
+  - path: patch-delete-grafana-configmaps.yml
+  - path: patch-delete-grafana-configmaps2.yml
+  - path: patch-delete-grafana-service.yml
+  - path: patch-mysql-arm64.yml
+  - path: patch-spinnaker-version.yml
+  - path: patch-disable-terraform.yml

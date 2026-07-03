@@ -1,0 +1,10 @@
+# Grafana resources from infrastructure/prometheus-grafana/ are hardcoded
+# to namespace "monitoring", conflicting with `kubectl -n spinnaker apply
+# -k ...`. We only need Prometheus (for Kayenta's metrics account), not
+# the Grafana dashboards. Split across 5 files — see patch-delete-ingress.yml.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana
+  namespace: monitoring
+$patch: delete

@@ -1,0 +1,15 @@
+# The base recipe hardcodes config.version: 2.21.4, which the Operator's
+# BOM lookup rejects outright: "Unable to read BOM version 2.21.4. Latest
+# stable versions: [2.36.0, 2.35.0, 2.34.0]" — confirmed by the actual
+# error, not assumed stale. Bumped to the oldest of those three listed as
+# still available, to stay closer to what this old recipe's config was
+# actually tuned for (SQL backend, specific profile settings) than jumping
+# to whatever the newest is.
+apiVersion: spinnaker.armory.io/v1alpha2
+kind: SpinnakerService
+metadata:
+  name: spinnaker
+spec:
+  spinnakerConfig:
+    config:
+      version: 2.34.0

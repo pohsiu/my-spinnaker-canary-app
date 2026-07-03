@@ -1,0 +1,59 @@
+# Kayenta needs TWO service integrations, combined in one file because
+# `config` is x-kubernetes-preserve-unknown-fields (confirmed against the
+# CRD schema) — nested arrays like serviceIntegrations get replaced
+# wholesale on patch, not merged, so two separate patch files each setting
+# this array would clobber each other rather than combine.
+#
+# 1. prometheus / METRICS_STORE — local copy of upstream's
+#    accounts/canary/prometheus.yml, with baseUrl corrected to point at
+#    the in-cluster Prometheus Service (infrastructure/prometheus-grafana/
+#    creates it as "prometheus" in namespace "spinnaker", port 9090)
+#    instead of upstream's placeholder "http://myprometheus".
+#    https://github.com/armory/spinnaker-kustomize-patches/blob/50a095cd9aa1a83723f4cc09d6e5a78c6d96d17e/accounts/canary/prometheus.yml
+#
+# 2. aws / CONFIGURATION_STORE + OBJECT_STORE — NOT in upstream's recipe at
+#    all (their accounts/canary/ only ships datadog.yml, dynatrace.yml,
+#    prometheus.yml, stackdriver.yml — no S3/Minio example, confirmed by
+#    checking both the pinned commit and current master). Kayenta requires
+#    an account supporting these two types to store canary configs/results
+#    — Prometheus only supports METRICS_STORE. Modeled on the documented
+#    shape for exactly this case (S3-compatible store via Minio):
+#    https://github.com/armory/documentation/blob/master/_spinnaker/configure_kayenta.md
+#    Points at the same in-cluster Minio persistentStorage already uses.
+apiVersion: spinnaker.armory.io/v1alpha2
+kind: SpinnakerService
+metadata:
+  name: spinnaker
+spec:
+  spinnakerConfig:
+    config:
+      canary:
+        enabled: true
+        serviceIntegrations:
+          - name: prometheus
+            enabled: true
+            accounts:
+              - name: prometheus
+                endpoint:
+                  baseUrl: http://prometheus.spinnaker:9090
+                supportedTypes:
+                  - METRICS_STORE
+          - name: aws
+            enabled: true
+            s3Enabled: true
+            accounts:
+              - name: minio-canary-store
+                bucket: spinnaker
+                region: us-west-2
+                rootFolder: kayenta
+                endpoint: http://minio.spinnaker:9000
+                accessKeyId: minio
+                secretAccessKey: encrypted:k8s!n:spin-secrets!k:minioAccessKey
+                supportedTypes:
+                  - CONFIGURATION_STORE
+                  - OBJECT_STORE
+        reduxLoggerEnabled: true
+        defaultJudge: NetflixACAJudge-v1.0
+        stagesEnabled: true
+        templatesEnabled: true
+        showAllConfigsEnabled: true

@@ -1,0 +1,16 @@
+# armory/terraformer has no ARM64 image ("no match for platform in
+# manifest" — same category of issue as mysql:5.7, confirmed the same way:
+# an actual ImagePullBackOff, not assumed). Terraform pipeline stages are
+# unrelated to what this stack is for (testing spinnaker/dinghyfile and
+# Kayenta canary analysis) — disabled rather than chasing an ARM64 tag for
+# a feature we don't use.
+apiVersion: spinnaker.armory.io/v1alpha2
+kind: SpinnakerService
+metadata:
+  name: spinnaker
+spec:
+  spinnakerConfig:
+    config:
+      armory:
+        terraform:
+          enabled: false

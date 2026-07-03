@@ -1,0 +1,7 @@
+# See patch-delete-grafana-sa.yml for why.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+$patch: delete

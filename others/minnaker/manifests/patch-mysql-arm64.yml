@@ -1,0 +1,21 @@
+# The base recipe's mysql:5.7 has no ARM64 image ("no match for platform
+# in manifest") — confirmed by an actual ImagePullBackOff on Apple
+# Silicon, not assumed. mysql:8.0 does ship ARM64 builds; pinned to
+# 8.0.36 (not floating 8.0) since --default-authentication-plugin was
+# removed in later 8.0.x releases and we need it: Spinnaker's bundled
+# JDBC driver (vintage: Spinnaker 2.x era) expects the old
+# mysql_native_password auth plugin, not MySQL 8's new default
+# caching_sha2_password.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: spinnaker
+spec:
+  template:
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0.36
+          args:
+            - --default-authentication-plugin=mysql_native_password
