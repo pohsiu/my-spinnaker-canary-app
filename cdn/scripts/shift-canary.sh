@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Points the KVS "canaryVersion" key at a new release and sets what percent
-# of new visitors get routed to it. Existing stable traffic is untouched.
+# Points the canary router's KV "canaryUrl" at a new deployment and sets
+# what percent of new visitors get routed to it. Existing stable traffic
+# is untouched.
 #
-# Usage: shift-canary.sh <app> <version> <weight-percent>
+# Usage: shift-canary.sh <app> <deployment-url> <weight-percent>
 set -euo pipefail
 
 APP="$1"
-VERSION="$2"
+DEPLOYMENT_URL="$2"
 WEIGHT="$3"          # 0-100
-KVS_ARN="${CLOUDFRONT_KVS_ARN:?CLOUDFRONT_KVS_ARN env var required}"
 
-aws cloudfront-keyvaluestore update-keys \
-  --kvs-arn "$KVS_ARN" \
-  --if-match "$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn "$KVS_ARN" --query 'ETag' --output text)" \
-  --puts "[
-    {\"Key\": \"${APP}.canaryVersion\", \"Value\": \"${VERSION}\"},
-    {\"Key\": \"${APP}.canaryWeight\", \"Value\": \"${WEIGHT}\"}
-  ]"
+: "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN env var required}"
+: "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID env var required}"
+: "${CF_KV_NAMESPACE_ID:?CF_KV_NAMESPACE_ID env var required}"
 
-echo "${APP}: canary=${VERSION} at ${WEIGHT}% of new visitors"
+npx --yes wrangler kv key put "${APP}.canaryUrl" "$DEPLOYMENT_URL" \
+  --namespace-id "$CF_KV_NAMESPACE_ID" --remote
+npx --yes wrangler kv key put "${APP}.canaryWeight" "$WEIGHT" \
+  --namespace-id "$CF_KV_NAMESPACE_ID" --remote
+
+echo "${APP}: canary=${DEPLOYMENT_URL} at ${WEIGHT}% of new visitors"

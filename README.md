@@ -9,7 +9,7 @@ apps/micro-frontend/  # Vite + React SPA — remote; exposes ./Widget as remoteE
 apps/backend/         # Express API + Prometheus metrics; serves apps/frontend/dist in prod
 helm/                 # Helm chart (production/baseline/canary via .Values.track), backend only
 spinnaker/            # dinghyfile (backend) + frontend/micro-frontend CDN dinghyfiles + Kayenta config
-cdn/                  # S3 + CloudFront design for apps/frontend & apps/micro-frontend — see cdn/README.md
+cdn/                  # Cloudflare Pages + Workers design for apps/frontend & apps/micro-frontend — see cdn/README.md
 site/                 # Architecture/flow write-up, published via GitHub Pages
 turbo.json            # Turborepo task pipeline (dev/build/lint across apps)
 ```

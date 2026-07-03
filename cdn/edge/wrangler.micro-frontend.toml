@@ -1,0 +1,14 @@
+name = "my-spinnaker-canary-app-micro-frontend-router"
+main = "canary-router.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+APP_NAME = "micro-frontend"
+
+[[kv_namespaces]]
+binding = "CANARY_KV"
+id = "<CF_KV_NAMESPACE_ID>"
+
+[[routes]]
+pattern = "<MICRO_FRONTEND_DOMAIN>/*"
+zone_id = "<CF_ZONE_ID>"

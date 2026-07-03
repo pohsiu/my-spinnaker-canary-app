@@ -1,7 +1,7 @@
 {
   "application": "my-web-service-micro-frontend",
   "name": "CDN-Canary-Deploy-Pipeline",
-  "description": "Independent CDN deploy for apps/micro-frontend. Same shape as spinnaker/frontend-dinghyfile — see cdn/README.md.",
+  "description": "Independent CDN deploy for apps/micro-frontend, targeting Cloudflare Pages + a Worker-based canary router. Same shape as spinnaker/frontend-dinghyfile — see cdn/README.md.",
   "triggers": [
     {
       "enabled": true,
@@ -13,7 +13,7 @@
   "parameterConfig": [
     {
       "name": "version",
-      "description": "Git SHA of the build to deploy",
+      "description": "Git SHA of the build to deploy (used as the Cloudflare Pages branch name)",
       "required": true
     }
   ],
@@ -22,7 +22,7 @@
       "name": "Build & Upload Release",
       "type": "runJobManifest",
       "refId": "1",
-      "description": "Uploads dist/ to s3://<CDN_BUCKET>/micro-frontend/releases/${parameters.version}/, including remoteEntry.js. No live traffic is affected by this stage.",
+      "description": "Creates a new Cloudflare Pages deployment for dist/ (including remoteEntry.js), tagged with the git SHA. No live traffic is affected — the canary router isn't pointed at it yet.",
       "cloudProvider": "kubernetes",
       "manifest": {
         "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
@@ -38,7 +38,7 @@
       "cloudProvider": "kubernetes",
       "manifest": {
         "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
-        "command": ["/scripts/shift-canary.sh", "micro-frontend", "${parameters.version}", "10"],
+        "command": ["/scripts/shift-canary.sh", "micro-frontend", "${#stage('Build & Upload Release')['outputs']['deploymentUrl']}", "10"],
         "envFrom": ["cdn-deploy-credentials"]
       }
     },
@@ -62,12 +62,12 @@
       "cloudProvider": "kubernetes",
       "manifest": {
         "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
-        "command": ["/scripts/promote.sh", "micro-frontend", "${parameters.version}"],
+        "command": ["/scripts/promote.sh", "micro-frontend", "${#stage('Build & Upload Release')['outputs']['deploymentUrl']}"],
         "envFrom": ["cdn-deploy-credentials"]
       }
     },
     {
-      "name": "Invalidate Cache",
+      "name": "Invalidate Edge Cache",
       "type": "runJobManifest",
       "refId": "5",
       "requisiteStageRefIds": ["4"],
