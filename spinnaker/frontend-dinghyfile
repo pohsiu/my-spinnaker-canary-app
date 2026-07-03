@@ -1,0 +1,82 @@
+{
+  "application": "my-web-service-frontend",
+  "name": "CDN-Canary-Deploy-Pipeline",
+  "description": "Independent CDN deploy for apps/frontend. Separate from the Helm/Kayenta pipeline in dinghyfile — see cdn/README.md for why.",
+  "triggers": [
+    {
+      "enabled": true,
+      "type": "webhook",
+      "source": "ci-frontend-build",
+      "description": "Fired by CI after `npm run build --workspace=frontend` uploads dist/ to a staging path; payload carries the git SHA as `version`."
+    }
+  ],
+  "parameterConfig": [
+    {
+      "name": "version",
+      "description": "Git SHA of the build to deploy",
+      "required": true
+    }
+  ],
+  "stages": [
+    {
+      "name": "Build & Upload Release",
+      "type": "runJobManifest",
+      "refId": "1",
+      "description": "Uploads dist/ to s3://<CDN_BUCKET>/frontend/releases/${parameters.version}/. No live traffic is affected by this stage.",
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/deploy-release.sh", "frontend", "${parameters.version}", "/artifacts/dist"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    },
+    {
+      "name": "Shift Canary to 10%",
+      "type": "runJobManifest",
+      "refId": "2",
+      "requisiteStageRefIds": ["1"],
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/shift-canary.sh", "frontend", "${parameters.version}", "10"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    },
+    {
+      "name": "Verify Canary",
+      "type": "manualJudgment",
+      "refId": "3",
+      "requisiteStageRefIds": ["2"],
+      "description": "TODO: replace with automated RUM-based Kayenta analysis once frontend telemetry exists (see cdn/README.md). Until then, a human checks the canary slice.",
+      "instructions": "Visit the site with the `app-bucket=canary` cookie set and confirm the frontend renders correctly, including the micro-frontend widget.",
+      "judgmentInputs": [
+        { "value": "Promote" },
+        { "value": "Roll back" }
+      ]
+    },
+    {
+      "name": "Promote to 100%",
+      "type": "runJobManifest",
+      "refId": "4",
+      "requisiteStageRefIds": ["3"],
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/promote.sh", "frontend", "${parameters.version}"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    },
+    {
+      "name": "Invalidate Cache",
+      "type": "runJobManifest",
+      "refId": "5",
+      "requisiteStageRefIds": ["4"],
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/invalidate.sh", "frontend"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    }
+  ]
+}

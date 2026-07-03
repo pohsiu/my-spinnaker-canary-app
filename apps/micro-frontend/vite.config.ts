@@ -12,30 +12,26 @@ const federation = (vitePluginFederation as { default: unknown }).default as (op
   shared?: string[]
 }) => Plugin
 
-// Points at the micro-frontend's deployed remoteEntry.js. Locally this is
-// `vite preview` on :4174 (see apps/micro-frontend); in CDN deployments
-// this is set per-environment (production/canary each get their own
-// versioned URL) — see cdn/README.md.
-const MF_REMOTE_URL = process.env.MF_REMOTE_URL ?? 'http://localhost:4174/assets/remoteEntry.js'
-
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     federation({
-      name: 'frontend_host',
-      remotes: {
-        micro_frontend: MF_REMOTE_URL,
+      name: 'micro_frontend',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './Widget': './src/Widget.tsx',
       },
       shared: ['react', 'react-dom'],
     }),
   ],
   server: {
-    port: 5173,
-    proxy: {
-      '/api': 'http://localhost:3000',
-      '/metrics': 'http://localhost:3000',
-    },
+    port: 4174,
+    cors: true,
+  },
+  preview: {
+    port: 4174,
+    cors: true,
   },
   build: {
     modulePreload: false,

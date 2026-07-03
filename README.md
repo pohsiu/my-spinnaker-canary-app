@@ -4,12 +4,14 @@ Demo project showing a web app (Vite + React frontend, Express backend) deployed
 via Helm and progressively rolled out with a Spinnaker + Kayenta canary pipeline.
 
 ```
-apps/frontend/   # Vite + React SPA (dev hot server / prod static bundle)
-apps/backend/    # Express API + Prometheus metrics; serves the built SPA in prod
-helm/            # Helm chart (production/baseline/canary via .Values.track)
-spinnaker/       # Dinghyfile pipeline-as-code + Kayenta canary metric config
-site/            # Architecture/flow write-up, published via GitHub Pages
-turbo.json       # Turborepo task pipeline (dev/build/lint across apps)
+apps/frontend/        # Vite + React SPA — host; consumes micro-frontend via Module Federation
+apps/micro-frontend/  # Vite + React SPA — remote; exposes ./Widget as remoteEntry.js
+apps/backend/         # Express API + Prometheus metrics; serves apps/frontend/dist in prod
+helm/                 # Helm chart (production/baseline/canary via .Values.track), backend only
+spinnaker/            # dinghyfile (backend) + frontend/micro-frontend CDN dinghyfiles + Kayenta config
+cdn/                  # S3 + CloudFront design for apps/frontend & apps/micro-frontend — see cdn/README.md
+site/                 # Architecture/flow write-up, published via GitHub Pages
+turbo.json            # Turborepo task pipeline (dev/build/lint across apps)
 ```
 
 Architecture write-up: https://pohsiu.github.io/my-spinnaker-canary-app/ (deployed
@@ -44,6 +46,32 @@ npm start
 back to `index.html` for client-side routing), alongside `/api/hello` and
 `/metrics`.
 
+## Micro-frontend (CDN deployment)
+
+`apps/micro-frontend` is a separate Vite + React SPA exposing `./Widget` via
+[`@originjs/vite-plugin-federation`](https://github.com/originjs/vite-plugin-federation)
+(Module Federation for Vite). `apps/frontend` loads it at *runtime* — not
+bundled in at build time — via `React.lazy(() => import('micro_frontend/Widget'))`,
+wrapped in an error boundary (`apps/frontend/src/RemoteBoundary.tsx`) since
+the remote is now a network dependency, not a local import.
+
+```
+npm run build --workspace=micro-frontend
+npm run preview --workspace=micro-frontend   # serves remoteEntry.js on :4174
+MF_REMOTE_URL=http://localhost:4174/assets/remoteEntry.js \
+  npm run build --workspace=frontend         # bakes the remote URL into the host bundle
+```
+
+`MF_REMOTE_URL` defaults to `http://localhost:4174/assets/remoteEntry.js` for
+local dev; in CDN deployments it's set per environment (production and
+canary each point at their own versioned `remoteEntry.js` — see `cdn/README.md`).
+
+Both SPAs deploy independently to CDN (design: `cdn/README.md`,
+pipelines: `spinnaker/frontend-dinghyfile` and
+`spinnaker/micro-frontend-dinghyfile`) — separate from the Helm/k8s/Kayenta
+pipeline that `spinnaker/dinghyfile` runs for the backend, since a
+CDN-hosted SPA has no Pod for Kayenta to compare metrics against.
+
 ## API endpoints (backend)
 
 | Route         | Description                                      |
@@ -65,9 +93,9 @@ docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .
 > Not yet verified against a running Docker daemon in this environment —
 > confirm the build succeeds before relying on it in CI.
 
-## Deploying via Helm + Spinnaker
+## Deploying via Helm + Spinnaker (backend)
 
-`helm/` and `spinnaker/` are still templated with placeholder values —
+`helm/` and `spinnaker/dinghyfile` are still templated with placeholder values —
 fill these in for your environment before wiring up the pipeline:
 
 - `helm/values.yaml`: `image.repository` — your real container registry path

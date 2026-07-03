@@ -1,0 +1,82 @@
+{
+  "application": "my-web-service-micro-frontend",
+  "name": "CDN-Canary-Deploy-Pipeline",
+  "description": "Independent CDN deploy for apps/micro-frontend. Same shape as spinnaker/frontend-dinghyfile — see cdn/README.md.",
+  "triggers": [
+    {
+      "enabled": true,
+      "type": "webhook",
+      "source": "ci-micro-frontend-build",
+      "description": "Fired by CI after `npm run build --workspace=micro-frontend` uploads dist/ to a staging path; payload carries the git SHA as `version`."
+    }
+  ],
+  "parameterConfig": [
+    {
+      "name": "version",
+      "description": "Git SHA of the build to deploy",
+      "required": true
+    }
+  ],
+  "stages": [
+    {
+      "name": "Build & Upload Release",
+      "type": "runJobManifest",
+      "refId": "1",
+      "description": "Uploads dist/ to s3://<CDN_BUCKET>/micro-frontend/releases/${parameters.version}/, including remoteEntry.js. No live traffic is affected by this stage.",
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/deploy-release.sh", "micro-frontend", "${parameters.version}", "/artifacts/dist"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    },
+    {
+      "name": "Shift Canary to 10%",
+      "type": "runJobManifest",
+      "refId": "2",
+      "requisiteStageRefIds": ["1"],
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/shift-canary.sh", "micro-frontend", "${parameters.version}", "10"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    },
+    {
+      "name": "Verify Canary",
+      "type": "manualJudgment",
+      "refId": "3",
+      "requisiteStageRefIds": ["2"],
+      "description": "TODO: replace with automated RUM-based Kayenta analysis once frontend telemetry exists (see cdn/README.md).",
+      "instructions": "Confirm apps/frontend still renders the widget correctly when its host build points at this canary's remoteEntry.js — a breaking export change here breaks the host even though this pipeline is independent.",
+      "judgmentInputs": [
+        { "value": "Promote" },
+        { "value": "Roll back" }
+      ]
+    },
+    {
+      "name": "Promote to 100%",
+      "type": "runJobManifest",
+      "refId": "4",
+      "requisiteStageRefIds": ["3"],
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/promote.sh", "micro-frontend", "${parameters.version}"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    },
+    {
+      "name": "Invalidate Cache",
+      "type": "runJobManifest",
+      "refId": "5",
+      "requisiteStageRefIds": ["4"],
+      "cloudProvider": "kubernetes",
+      "manifest": {
+        "image": "<CDN_DEPLOY_TOOLS_IMAGE>",
+        "command": ["/scripts/invalidate.sh", "micro-frontend"],
+        "envFrom": ["cdn-deploy-credentials"]
+      }
+    }
+  ]
+}

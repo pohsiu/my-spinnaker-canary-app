@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { lazy, useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from './assets/vite.svg'
 import heroImg from './assets/hero.png'
+import RemoteBoundary from './RemoteBoundary'
 import './App.css'
+
+const MicroFrontendWidget = lazy(() => import('micro_frontend/Widget'))
 
 function App() {
   const [message, setMessage] = useState<string | null>(null)
@@ -39,6 +42,12 @@ function App() {
           {loading ? 'Calling backend...' : 'Call backend /api/hello'}
         </button>
         {message && <p>{message}</p>}
+      </section>
+
+      <section id="micro-frontend" style={{ display: 'flex', justifyContent: 'center', padding: '1.5rem 0' }}>
+        <RemoteBoundary>
+          <MicroFrontendWidget />
+        </RemoteBoundary>
       </section>
 
       <div className="ticks"></div>

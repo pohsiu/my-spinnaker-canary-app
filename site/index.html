@@ -112,7 +112,6 @@
     grid-template-columns:230px minmax(0,1fr);
     gap:3.5rem;
   }
-  .hero-inner .spacer{}
   .eyebrow{
     font-family:var(--font-mono);
     font-size:0.78rem;
@@ -463,11 +462,13 @@
       </p>
       <div class="meta-row">
         <span class="pill">Vite + React</span>
+        <span class="pill">Module Federation</span>
         <span class="pill">Express + Prometheus</span>
         <span class="pill">Turborepo</span>
         <span class="pill">Helm</span>
         <span class="pill">Spinnaker · Dinghy</span>
         <span class="pill">Kayenta</span>
+        <span class="pill">S3 + CloudFront</span>
       </div>
       <a class="repo-link" href="https://github.com/pohsiu/my-spinnaker-canary-app">
         github.com/pohsiu/my-spinnaker-canary-app →
@@ -487,9 +488,11 @@
       <li><a href="#helm">05 Helm Chart</a></li>
       <li><a href="#pipeline">06 Spinnaker Pipeline</a></li>
       <li><a href="#kayenta">07 Kayenta 分析</a></li>
-      <li><a href="#flow">08 端到端流程</a></li>
-      <li><a href="#config">09 部署前設定</a></li>
-      <li><a href="#structure">10 專案結構</a></li>
+      <li><a href="#micro-frontend">08 Micro-frontend</a></li>
+      <li><a href="#cdn">09 CDN 部署策略</a></li>
+      <li><a href="#flow">10 端到端流程</a></li>
+      <li><a href="#config">11 部署前設定</a></li>
+      <li><a href="#structure">12 專案結構</a></li>
     </ol>
   </nav>
 
@@ -516,12 +519,17 @@
     <section id="architecture" class="wide">
       <span class="section-num">02</span>
       <h2 style="max-width:700px">架構總覽</h2>
-      <p style="max-width:700px">四個各自獨立、透過慣例（convention）串接的部分：</p>
+      <p style="max-width:700px">六個各自獨立、透過慣例（convention）串接的部分：</p>
       <div class="arch-grid">
         <div class="arch-card">
           <span class="k">apps/frontend</span>
-          <span class="v">Vite + React SPA</span>
-          <p>開發時走 HMR dev server；上線只產出純靜態 <code>dist/</code>，不依賴任何 Node 執行環境。</p>
+          <span class="v">Vite + React SPA · host</span>
+          <p>開發時走 HMR dev server；上線產出純靜態 <code>dist/</code>，執行期透過 Module Federation 載入 micro-frontend。</p>
+        </div>
+        <div class="arch-card">
+          <span class="k">apps/micro-frontend</span>
+          <span class="v">Vite + React SPA · remote</span>
+          <p>曝出 <code>remoteEntry.js</code>，被 apps/frontend 在 <strong>執行期</strong>載入，不是 build-time 依賴。</p>
         </div>
         <div class="arch-card">
           <span class="k">apps/backend</span>
@@ -531,12 +539,17 @@
         <div class="arch-card">
           <span class="k">helm/</span>
           <span class="v">單一 Chart，三種 track</span>
-          <p>用同一份 template，靠 <code>--set track=</code> 產生互不衝突的 production / canary / baseline 資源。</p>
+          <p>用同一份 template，靠 <code>--set track=</code> 產生互不衝突的 production / canary / baseline 資源（backend 專用）。</p>
         </div>
         <div class="arch-card">
           <span class="k">spinnaker/</span>
-          <span class="v">Dinghyfile + Kayenta Config</span>
-          <p>宣告「bake → 分析 → 晉升」的流水線，以及 Kayenta 用來判定金絲雀是否健康的指標定義。</p>
+          <span class="v">3 條 Pipeline-as-Code</span>
+          <p>backend 用 Helm/Kayenta；frontend、micro-frontend 各自獨立的 CDN 部署 pipeline。</p>
+        </div>
+        <div class="arch-card">
+          <span class="k">cdn/</span>
+          <span class="v">S3 + CloudFront 設計</span>
+          <p>frontend、micro-frontend 的部署目標；CloudFront Functions 做金絲雀流量分流。</p>
         </div>
       </div>
       <div class="callout">
@@ -705,8 +718,122 @@ docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .</code></pre
       </div>
     </section>
 
-    <section id="flow" class="wide">
+    <section id="micro-frontend">
       <span class="section-num">08</span>
+      <h2>Micro-frontend（Module Federation）</h2>
+      <p class="lede">
+        apps/frontend 不再是唯一的前端。apps/micro-frontend 是獨立打包、獨立部署的
+        第二個 SPA，透過 <a href="https://github.com/originjs/vite-plugin-federation">vite-plugin-federation</a>
+        （Vite 版 Module Federation）在<strong>執行期</strong>被 host 載入——兩者的 build 完全不互相依賴。
+      </p>
+      <div class="arch-grid" style="grid-template-columns:repeat(2,1fr)">
+        <div class="arch-card">
+          <span class="k">remote · apps/micro-frontend</span>
+          <span class="v">exposes ./Widget</span>
+          <p><code>vite build</code> 產出 <code>remoteEntry.js</code>——host 在瀏覽器裡動態 <code>import()</code> 的進入點。</p>
+        </div>
+        <div class="arch-card">
+          <span class="k">host · apps/frontend</span>
+          <span class="v">remotes: micro_frontend</span>
+          <p><code>React.lazy(() =&gt; import('micro_frontend/Widget'))</code>，外包一層 error boundary，因為 remote 現在是網路依賴而非本地 import。</p>
+        </div>
+      </div>
+      <pre><code>npm run build --workspace=micro-frontend
+npm run preview --workspace=micro-frontend   # 在 :4174 serve remoteEntry.js
+
+MF_REMOTE_URL=http://localhost:4174/assets/remoteEntry.js \
+  npm run build --workspace=frontend         # 把 remote URL 編進 host bundle</code></pre>
+      <div class="callout warn">
+        <span class="label">Remote 若掛掉</span>
+        <code>RemoteBoundary</code>（error boundary + Suspense）會攔下載入失敗，顯示
+        「micro-frontend unavailable」而不是讓整個 host 白屏——micro-frontend 掛掉只影響它自己那塊 UI。
+      </div>
+    </section>
+
+    <section id="cdn" class="wide">
+      <span class="section-num">09</span>
+      <h2 style="max-width:700px">CDN 部署策略（frontend + micro-frontend）</h2>
+      <p style="max-width:700px">
+        兩個 SPA 都是純靜態產出，各自獨立部署到 <strong>S3 + CloudFront</strong>，
+        跟 backend 的 Helm/k8s/Kayenta pipeline是<strong>完全平行、互不相依</strong>的另一條路。
+      </p>
+      <div class="callout">
+        <span class="label">為什麼不能沿用 Kayenta</span>
+        Kayenta 現有的分析能成立，是因為 k8s 給了兩組可比較的 Pod（<code>track=canary</code> vs
+        <code>track=baseline</code>），Prometheus 才能用 <code>track</code> label 分別查詢。CDN 上的 SPA
+        沒有 Pod，「健不健康」是 RUM／Web Vitals／JS error rate 的問題，不是 PromQL 能回答的問題——
+        而這個 repo 目前還沒有 RUM 蒐集管線，所以下面用 <strong>Manual Judgment</strong> 頂著，
+        標記為未來要換成自動化分析的位置。
+      </div>
+
+      <h3>路由：CloudFront Functions + KeyValueStore</h3>
+      <p>
+        沒有選 Lambda@Edge——KeyValueStore 查詢不需要 Lambda 的運算資源，
+        CloudFront Functions 延遲更低、沒有 cold start。<code>viewer-request</code>
+        依 cookie 做 sticky 分流決定 stable / canary，<code>viewer-response</code>
+        把決定寫回 cookie，確保同一個訪客的 HTML 跟 JS/CSS chunk 不會來自不同版本。
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>KVS Key（每個 app 各自命名空間）</th><th>意義</th></tr></thead>
+          <tbody>
+            <tr><td><code>&lt;app&gt;.stableVersion</code></td><td>多數訪客看到的版本</td></tr>
+            <tr><td><code>&lt;app&gt;.canaryVersion</code></td><td>金絲雀切分到的版本</td></tr>
+            <tr><td><code>&lt;app&gt;.canaryWeight</code></td><td>0–100，新訪客被分到 canary 的機率</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>部署流程</h3>
+      <p><code>spinnaker/frontend-dinghyfile</code> 與 <code>spinnaker/micro-frontend-dinghyfile</code>，兩個 app 相同的五個階段：</p>
+      <div class="flow">
+        <div class="flow-step">
+          <span class="n">STAGE 1</span>
+          <h4>上傳版本</h4>
+          <p>寫進 <code>releases/&lt;sha&gt;/</code>，不影響任何現有流量。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step">
+          <span class="n">STAGE 2</span>
+          <h4>切 10% 流量</h4>
+          <p>更新 KVS 的 <code>canaryVersion</code> / <code>canaryWeight</code>。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step gate">
+          <span class="n">STAGE 3 · GATE</span>
+          <h4>Manual Judgment</h4>
+          <p>人工檢查 canary 切片；未來換成 RUM 指標自動判定。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step">
+          <span class="n">STAGE 4</span>
+          <h4>Promote 100%</h4>
+          <p><code>stableVersion</code> 切到新版本，<code>canaryWeight</code> 歸零。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step">
+          <span class="n">STAGE 5</span>
+          <h4>Invalidate</h4>
+          <p>清快取，避免有人卡在舊的 <code>index.html</code>。</p>
+        </div>
+      </div>
+      <p style="max-width:700px">
+        兩條 pipeline 各自獨立部署，但 micro-frontend 若改了曝出的元件 API，
+        還是會讓當時線上的 host 版本壞掉——這點目前只能靠人工協調（Manual Judgment 階段互相確認），
+        沒有 contract test 把關。細節見 <code>cdn/README.md</code>。
+      </p>
+    </section>
+
+    <section id="flow" class="wide">
+      <span class="section-num">10</span>
       <h2 style="max-width:700px">端到端流程</h2>
       <p style="max-width:700px">把上面每一段接起來，一次程式碼變更的完整路徑：</p>
       <div class="tree">
@@ -722,30 +849,36 @@ docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .</code></pre
     </section>
 
     <section id="config">
-      <span class="section-num">09</span>
+      <span class="section-num">11</span>
       <h2>部署前必須設定的值</h2>
-      <p>這份 repo 目前是「可運作但未指向真實環境」的狀態，以下三處是 placeholder，接上真正的 Spinnaker/Kubernetes 環境前需要換掉：</p>
+      <p>這份 repo 目前是「可運作但未指向真實環境」的狀態，以下都是 placeholder，接上真正的環境前需要換掉：</p>
       <ul>
         <li><code>helm/values.yaml</code> → <code>image.repository</code>：換成實際的 container registry 路徑</li>
         <li><code>spinnaker/dinghyfile</code> → <code>triggers[].repository</code>：需與上面同一個 registry 路徑</li>
         <li><code>spinnaker/dinghyfile</code> / <code>canary-config.json</code> → <code>metricsAccountName</code>：換成 Spinnaker 裡設定好的 Prometheus 帳號名稱</li>
+        <li><code>spinnaker/frontend-dinghyfile</code> / <code>micro-frontend-dinghyfile</code> → <code>&lt;CDN_DEPLOY_TOOLS_IMAGE&gt;</code>：build 並 push <code>cdn/deploy-tools/Dockerfile</code> 後填入</li>
+        <li><code>cdn/edge/viewer-request.js</code> → <code>&lt;CLOUDFRONT_KVS_ARN&gt;</code>，以及部署腳本用到的 <code>CDN_BUCKET</code> / <code>CLOUDFRONT_DISTRIBUTION_ID</code> 環境變數</li>
       </ul>
       <div class="callout warn">
         <span class="label">尚未驗證</span>
-        本機沒有 Docker daemon 與 Kubernetes 叢集可用，<code>docker build</code> 與 Helm 渲染結果
-        尚未對真實環境跑過完整驗證；<code>helm lint</code> / <code>helm template</code> 已通過語法與樣板檢查。
+        本機沒有 Docker daemon、Kubernetes 叢集、AWS 帳號可用。backend 這邊
+        <code>helm lint</code> / <code>helm template</code> 已通過語法與樣板檢查；
+        micro-frontend 的 Module Federation 整合已用 Playwright 實際跑過（host 動態載入 remote、互動狀態正常）。
+        <code>cdn/</code> 整套 S3 + CloudFront 設計完全沒有跑過真實 AWS 環境，是設計文件而非已驗證的部署。
       </div>
     </section>
 
     <section id="structure">
-      <span class="section-num">10</span>
+      <span class="section-num">12</span>
       <h2>專案結構</h2>
       <div class="tree">
-apps/frontend/   <span class="comment"># Vite + React SPA</span>
-apps/backend/    <span class="comment"># Express API + /metrics + serve dist/</span>
-helm/            <span class="comment"># Chart：production / canary / baseline</span>
-spinnaker/       <span class="comment"># dinghyfile + canary-config.json</span>
-turbo.json       <span class="comment"># dev/build 任務編排</span>
+apps/frontend/        <span class="comment"># Vite + React SPA · host，執行期載入 micro-frontend</span>
+apps/micro-frontend/  <span class="comment"># Vite + React SPA · remote，曝出 remoteEntry.js</span>
+apps/backend/         <span class="comment"># Express API + /metrics + serve apps/frontend/dist</span>
+helm/                 <span class="comment"># Chart：production / canary / baseline（backend 專用）</span>
+spinnaker/            <span class="comment"># dinghyfile（backend）+ frontend/micro-frontend CDN pipelines</span>
+cdn/                  <span class="comment"># S3 + CloudFront 設計：edge functions、部署腳本、README</span>
+turbo.json            <span class="comment"># dev/build 任務編排</span>
       </div>
     </section>
 
