@@ -1,14 +1,17 @@
 name = "my-spinnaker-canary-app-frontend-router"
 main = "canary-router.js"
 compatibility_date = "2025-01-01"
+workers_dev = true
 
 [vars]
 APP_NAME = "frontend"
 
 [[kv_namespaces]]
 binding = "CANARY_KV"
-id = "<CF_KV_NAMESPACE_ID>"
+id = "01294afbdf4f44f6bb91287fce76f76d"
 
-[[routes]]
-pattern = "<FRONTEND_DOMAIN>/*"
-zone_id = "<CF_ZONE_ID>"
+# Custom domain routing (needs a zone on Cloudflare) — uncomment once you
+# have a domain, and delete workers_dev above:
+# [[routes]]
+# pattern = "<FRONTEND_DOMAIN>/*"
+# zone_id = "<CF_ZONE_ID>"

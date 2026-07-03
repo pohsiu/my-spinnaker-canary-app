@@ -7,13 +7,34 @@ this fits into the overall architecture, and
 [`../README.md`](../README.md#micro-frontend-cdn-deployment) for the
 build/dev-time picture (Module Federation, `remoteEntry.js`).
 
-This is a **design + reference implementation**, not a deployed environment
-— nothing here has run against a real Cloudflare account yet. Placeholders
-(`<CF_KV_NAMESPACE_ID>`, `<CF_ZONE_ID>`, `<FRONTEND_DOMAIN>`, etc.) need real
-values, same spirit as the existing Helm/Spinnaker placeholders. Cloudflare's
-free plan covers everything here (Pages: unlimited static requests; Workers:
-100k requests/day; Workers KV: 100k reads + 1k writes/day) — no credit card
-required to try it.
+**This has been deployed and verified end-to-end against a real Cloudflare
+account** (free plan, no credit card) — not just a design on paper anymore.
+Both Pages projects, the Workers KV namespace, and both canary-router
+Workers exist and are live:
+
+| Resource | Value |
+| --- | --- |
+| Pages project (frontend) | `my-spinnaker-canary-app-frontend` |
+| Pages project (micro-frontend) | `my-spinnaker-canary-app-micro-frontend` |
+| Workers KV namespace | `01294afbdf4f44f6bb91287fce76f76d` |
+| workers.dev subdomain | `spinnaker-sub` |
+| Frontend router | `my-spinnaker-canary-app-frontend-router.spinnaker-sub.workers.dev` |
+| Micro-frontend router | `my-spinnaker-canary-app-micro-frontend-router.spinnaker-sub.workers.dev` |
+
+Verified live (Playwright against the real URLs, not local servers):
+the host loads `remoteEntry.js` through the micro-frontend router and
+renders the widget; the router sets the sticky `app-bucket` cookie; shifting
+`micro-frontend.canaryWeight` to 100% in KV made a fresh visitor see a
+canary-labeled build, and setting it back to 0% reverted fresh visitors to
+stable — both confirmed by an actual page load, not just a KV read.
+
+What's *not* yet real: a custom domain (currently using the shared
+`workers.dev` subdomain, since `[[routes]]` needs a zone — see the commented
+block in `wrangler.*.toml`), and `cdn/scripts/*.sh` haven't been run
+literally as written (testing used `wrangler`/KV commands directly, since
+this session is OAuth-authenticated and the scripts intentionally require
+`CLOUDFLARE_API_TOKEN` for non-interactive CI use — same shape, not
+separately exercised).
 
 ## Why not Kayenta for these
 
@@ -91,7 +112,9 @@ stages via the `cdn/deploy-tools` image (build from repo root:
 
 Required env vars: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
 `CF_KV_NAMESPACE_ID` (shift/promote), `CF_ZONE_ID` + `APP_DOMAIN`
-(invalidate).
+(invalidate). `invalidate.sh` needs a zone (custom domain) to purge — not
+applicable yet while running on the shared `workers.dev` subdomain, which
+has no cache to purge in the same sense.
 
 ## Pipeline shape
 
@@ -109,23 +132,43 @@ stages 2 and 4 (`${#stage('Build & Upload Release')['outputs']['deploymentUrl']}
 in the dinghyfiles) depends on how Run Job stage output is wired in your
 Spinnaker install — flagged there rather than assumed.
 
-`apps/frontend`'s host build needs `MF_REMOTE_URL` pointed at
-`apps/micro-frontend`'s **stable** deployment's `remoteEntry.js` URL at
-build time (see root README) — the two pipelines are independent, but a
-micro-frontend canary that changes its exposed API shape is still a
-breaking change for whatever host version is live. Coordinate manually
-until there's a contract test between them.
-
-## Trying this for real
-
-Requires a (free) Cloudflare account and logging in locally:
+`apps/frontend`'s host build needs `MF_REMOTE_URL` pointed at the
+**micro-frontend router**, not a specific Pages deployment URL — this was a
+real bug caught during live testing: pointing it at a fixed deployment
+bakes that exact version into the host bundle, so shifting
+`micro-frontend.canaryWeight` in KV has *no effect* on what the host loads.
+Only routing through the Worker lets the host observe canary shifts:
 
 ```
-npx wrangler login          # browser OAuth
-# or set CLOUDFLARE_API_TOKEN for non-interactive use
+MF_REMOTE_URL=https://my-spinnaker-canary-app-micro-frontend-router.spinnaker-sub.workers.dev/assets/remoteEntry.js \
+  npm run build --workspace=frontend
 ```
 
-Then: create two Pages projects, one Workers KV namespace, deploy the two
-routers with the wrangler.*.toml files above, and fill in every
-`<PLACEHOLDER>` in this repo's `cdn/` and `spinnaker/*-dinghyfile` files
-with the real IDs `wrangler`/the Cloudflare dashboard gives you.
+The two pipelines are still independent, but a micro-frontend canary that
+changes its exposed API shape is a breaking change for whatever host
+version is live regardless of routing — coordinate manually until there's a
+contract test between them.
+
+## Redeploying / trying this yourself
+
+Already logged in for this account (`npx wrangler login`, browser OAuth).
+To ship a new version by hand (what the Spinnaker pipeline automates):
+
+```
+npm run build --workspace=micro-frontend
+npx wrangler pages deploy apps/micro-frontend/dist \
+  --project-name=my-spinnaker-canary-app-micro-frontend --branch=<sha>
+# copy the deployment URL it prints, then:
+npx wrangler kv key put "micro-frontend.canaryUrl" "<deployment-url>" \
+  --namespace-id 01294afbdf4f44f6bb91287fce76f76d --remote
+npx wrangler kv key put "micro-frontend.canaryWeight" "10" \
+  --namespace-id 01294afbdf4f44f6bb91287fce76f76d --remote
+# verify the canary slice, then promote:
+npx wrangler kv key put "micro-frontend.stableUrl" "<deployment-url>" \
+  --namespace-id 01294afbdf4f44f6bb91287fce76f76d --remote
+npx wrangler kv key put "micro-frontend.canaryWeight" "0" \
+  --namespace-id 01294afbdf4f44f6bb91287fce76f76d --remote
+```
+
+Same shape for `apps/frontend`, substituting `frontend` for `micro-frontend`
+throughout and rebuilding with the `MF_REMOTE_URL` above first.
