@@ -1,6 +1,20 @@
 name: minnaker
 
 services:
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    volumes:
+      - registry-data:/var/lib/registry
+    ports:
+      # host-side push access (docker build/push from the host). Not
+      # 5000:5000 - macOS's AirPlay Receiver (ControlCenter) squats on
+      # host port 5000 and intercepts requests even with Docker also
+      # publishing it, confirmed via `lsof -iTCP:5000`. In-cluster access
+      # from k3s still uses registry:5000 (compose-internal networking,
+      # unaffected by this host-port conflict).
+      - "5050:5000"
+
   k3s:
     image: rancher/k3s:v1.31.4-k3s1
     privileged: true
@@ -18,6 +32,12 @@ services:
     volumes:
       - k3s-server:/var/lib/rancher/k3s
       - kubeconfig:/output
+      # k3s reads registries.yaml at startup to trust `registry:5000` as
+      # plain HTTP (registry:2 has no TLS here — it's throwaway/disposable
+      # infra on a private compose network, not exposed beyond localhost)
+      - ./registries.yaml:/etc/rancher/k3s/registries.yaml:ro
+    depends_on:
+      - registry
     restart: unless-stopped
 
   bootstrap:
@@ -68,3 +88,4 @@ services:
 volumes:
   k3s-server:
   kubeconfig:
+  registry-data:

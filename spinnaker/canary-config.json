@@ -8,8 +8,8 @@
       "groups": ["Web-IO"],
       "query": {
         "type": "prometheus",
-        "customFilter": "app=\"my-web-service\" AND track=\"${scope}\"",
-        "metricName": "rate(http_requests_total{code=~\"5..\"}[2m])"
+        "metricName": "http_requests_total",
+        "customInlineTemplate": "PromQL:sum(rate(http_requests_total{code=~\"5..\", app=\"my-web-service\", track=\"${scope}\"}[2m])) or vector(0)"
       },
       "analysisConfigurations": {
         "canary": {
@@ -24,8 +24,8 @@
       "groups": ["Web-IO"],
       "query": {
         "type": "prometheus",
-        "customFilter": "app=\"my-web-service\" AND track=\"${scope}\"",
-        "metricName": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
+        "metricName": "http_request_duration_seconds",
+        "customInlineTemplate": "PromQL:histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{app=\"my-web-service\", track=\"${scope}\"}[5m])) by (le))"
       },
       "analysisConfigurations": {
         "canary": {

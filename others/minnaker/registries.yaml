@@ -1,0 +1,14 @@
+# k3s/containerd registry config: trust the throwaway `registry` compose
+# service as a plain-HTTP mirror. Referenced by docker-compose.yml's k3s
+# service mount at /etc/rancher/k3s/registries.yaml.
+#
+# Images are pushed from the host via the published port
+# (localhost:5000/<repo>:<tag>) and referenced in Helm/K8s manifests via
+# the compose-network hostname (registry:5000/<repo>:<tag>) — same
+# underlying registry data, reached through two different hostnames
+# depending on whether the caller is the host or a container on the
+# minnaker compose network.
+mirrors:
+  "registry:5000":
+    endpoint:
+      - "http://registry:5000"

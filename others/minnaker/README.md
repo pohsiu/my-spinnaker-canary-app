@@ -177,16 +177,13 @@ crash-loop. Reverted to `v1.8.11`, which is what actually works.
 
 ## What this does NOT do
 
-- **Does not deploy `apps/backend` into this cluster**, and does not wire
-  Prometheus to `apps/backend`'s `/metrics`. This stack stands up a fully
-  healthy Spinnaker/Kayenta control plane — actually running
-  `spinnaker/dinghyfile` end-to-end against this repo's real app still
-  needs a container registry this k3s can pull `apps/backend`'s image
-  from, and a Prometheus scrape target pointed at real canary/baseline
-  pods.
 - **Does not sync `spinnaker/dinghyfile` automatically.** No Dinghy
   install here — apply pipeline JSON directly via the Spinnaker API
   (Gate is reachable and authenticated calls work, confirmed above).
+- **Does not push to a real external registry.** The local `registry:2`
+  service (see below) is throwaway/HTTP-only and only trusted by this
+  compose project's own k3s node — it's a stand-in for CI's real registry,
+  not a replacement for one.
 - Everything above has been exercised, including `patch-local-access.yml`'s
   CORS override — confirmed with an actual browser (Playwright), not just
   `curl`: signed into Deck's login form at `localhost:9000`, landed on the
@@ -195,3 +192,196 @@ crash-loop. Reverted to `v1.8.11`, which is what actually works.
   (`/api/auth/user`, `/api/login`, `/api/credentials`, `/api/plugins/deck/...`,
   `/api/notifications/metadata`, `/api/jobs/preconfigured`, `/api/securityGroups`)
   — all `200`, zero console/request errors.
+
+## Local registry, app deployment, and Kayenta canary analysis — confirmed working end to end
+
+As of the `integrate-local-spinnaker` change, this stack has been extended
+and actually exercised well beyond the control-plane-only state above:
+
+- **A local, disposable registry** (`registry:2`, compose service
+  `registry`) that both the host and k3s trust. Host-side push uses
+  `localhost:5050` (not `5000` — macOS's AirPlay Receiver squats on that
+  port and silently intercepts requests even with Docker also publishing
+  it, confirmed via `lsof -iTCP:5000`); in-cluster pulls use
+  `registry:5000` via a `registries.yaml` mounted into the `k3s` service
+  at `/etc/rancher/k3s/registries.yaml`, marking it as a trusted
+  plain-HTTP mirror.
+- **`apps/backend` deployed via `helm/` across all three tracks**
+  (`production`, `canary`, `baseline`) into the `spinnaker` namespace,
+  pulling from that local registry — confirmed via exact image-digest
+  match on the running pods, not just "pod is Running".
+- **Prometheus already scrapes the deployed app with zero new config** —
+  the upstream recipe's `kubernetes-pods` scrape job (annotation-based
+  discovery) combined with `helm/templates/deployment.yaml`'s existing
+  `prometheus.io/scrape` annotations was sufficient. No new patch needed;
+  confirmed via Prometheus's own `/api/v1/targets` (`health: "up"` for all
+  9 app pods) and real query results for `http_requests_total` /
+  `http_request_duration_seconds_bucket`, filtered by `track`.
+- **Kayenta's canary judgement genuinely discriminates pass vs. fail
+  against real Prometheus data**, confirmed with two real runs:
+  - Healthy canary (identical image/config to baseline): **score 100,
+    Pass**
+  - Deliberately degraded canary (`FAULT_INJECT_5XX_RATE=0.7`,
+    `FAULT_INJECT_LATENCY_MS=400` — env vars added to
+    `apps/backend/server.js`, wired through `helm/`'s new `env:` values
+    support): **score 50, Fail** (below the `marginal` threshold)
+  - Both runs called Kayenta's own standalone `POST
+    /canary/{canaryConfigId}` API directly (`metricsAccountName=prometheus`,
+    `storageAccountName=configurationAccountName=minio-canary-store`) —
+    see "Known limitation" below for why this bypasses the Spinnaker
+    pipeline's `canaryAnalysis`/`kayentaCanary` stage specifically.
+  - This required fixing two real, version-specific bugs in
+    `spinnaker/canary-config.json`, only discoverable by actually running
+    a judgement and reading the resulting errors: `customFilter` is
+    deprecated in this Kayenta version (`customInlineTemplate` with a
+    `PromQL:` prefix is required for a verbatim query — traced via
+    bytecode decompilation of `PrometheusMetricsService.buildQuery`,
+    since neither the error message nor any bundled docs stated the
+    prefix requirement), and the 5xx-rate query needed
+    `sum(...) or vector(0)` — without it, pods with zero errors during
+    the analysis window have no matching Prometheus time series at all
+    (not a zero value), which the judge was classifying as `NODATA`
+    rather than "0 errors".
+
+### Resolved: the Orca `kayentaCanary` pipeline stage is broken in this bundled version — worked around by redesigning the pipeline
+
+`spinnaker/dinghyfile`'s native `canaryAnalysis`/`kayentaCanary` stage type
+has a real, unresolved bug in this bundled Spinnaker version (root-cause
+investigation below, never solved). Rather than leave the pipeline unable
+to run end-to-end, `spinnaker/dinghyfile` now replaces that single stage
+with a small sequence of stages that gets the same result by calling
+Kayenta's own standalone API directly — proven to work correctly — instead
+of routing through Orca's broken native integration:
+
+- **`Compute Analysis Window`** (`evaluateVariables`) computes `startTime`/
+  `endTime` at trigger time via SpEL (`T(java.time.Instant).now()...`),
+  since a real trigger can happen whenever.
+- **`Generate Traffic`** (`runJob`) fires 300 requests each at the
+  canary/baseline services' `/api/hello` so the analysis window has real
+  data — mirrors what earlier manual testing did by hand.
+- **`Start Canary Judgement`** (`webhook`, `waitForCompletion: false`)
+  `POST`s to Kayenta's `/canary/{canaryConfigId}` directly.
+- **`Poll Canary Judgement`** (`webhook`, `waitForCompletion: true`,
+  `statusUrlResolution: getMethod`) polls the same URL via `GET` until
+  done.
+- **`Check Canary Score`** (`checkPreconditions`, `expression` type)
+  inspects the actual judge classification and fails the pipeline (via
+  `failPipeline: true`) if it's `Fail`, gating `Bake Production`/`Promote
+  to Production` exactly like the native stage would have.
+
+**Two real gotchas hit implementing this, only discoverable by actually
+triggering the pipeline and reading what came back:**
+
+- The `Poll Canary Judgement` webhook's `statusJsonPath` must point at a
+  field that's *always present* in the response, e.g. `$.status`
+  (`"running"` → `"succeeded"`/`"terminal"`) — **not** a field like
+  `$.result.judgeResult.score.classification` that's absent until the
+  judgement completes. Orca's `MonitorWebhookTask` treats an unresolvable
+  JsonPath as a hard `TERMINAL` failure (`"Unable to parse status: JSON
+  property '...' not found in response body"`), not "keep polling and try
+  again later" — confirmed via a real failed run, then via decompiling
+  `MonitorWebhookTask.execute()`.
+- The stage's **final, actual polled response lives at
+  `context.webhook.monitor.body`**, not `context.webhook.body` (that key
+  holds a stale snapshot of the very first `POST`'s response, frozen at
+  `Start Canary Judgement` time, and never updates). A `Check Canary Score`
+  expression pointed at `webhook.body...` fails with `EL1012E: Cannot index
+  into a null value` even on a stage that polled and completed correctly —
+  found by comparing the two keys' actual contents on a completed run.
+
+**Also found along the way (a real metric-tuning issue, not a plumbing
+bug):** the first few end-to-end runs got a spurious `Fail` on the `HTTP
+p95 Latency` metric even for an unmodified canary, with suspiciously tiny
+reported variance. Cause: `apps/backend/server.js`'s Prometheus histogram
+buckets (`[0.1, 0.3, 0.5, ...]`) are too coarse for this app's actual
+0–200ms latency range — everything falls in a single bucket, so
+`histogram_quantile`'s interpolation loses most of its real variance and
+becomes hypersensitive to run-to-run noise. Fixed with finer buckets
+(`[0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.5, 0.7, 1, 3, 5]`).
+
+**Verified end-to-end, both directions**, triggering the real pipeline via
+Gate (not just the standalone API):
+- Healthy canary: all 11 stages `SUCCEEDED` including `Promote to
+  Production`, judge score **100, Pass**.
+- Degraded canary (env-var fault injection, see below): `Check Canary
+  Score` correctly fails the pipeline before `Bake Production` ever runs.
+
+One more real gotcha hit reaching the clean Pass: after fixing the
+histogram buckets and rebuilding the image, two consecutive pipeline runs
+still judged against the *old* image digest — `deployManifest` re-applying
+an unchanged `image:tag` string doesn't make Kubernetes repull or restart
+pods by default. Fixed permanently by adding `imagePullPolicy: Always` to
+`helm/templates/deployment.yaml`, not just as a one-off `kubectl patch`.
+
+#### Original bug investigation (root cause never found)
+
+`spinnaker/dinghyfile`'s `bakeManifest` and `deployManifest` stages work
+correctly when submitted to Gate as a real Spinnaker pipeline (verified:
+bake renders the Helm chart from an embedded/base64 artifact, deploy
+applies it via the `spinnaker` Kubernetes account). The native
+`canaryAnalysis`/`kayentaCanary` stage type does not — even with the
+correct type and a context shape confirmed byte-for-byte correct (verified
+by decompiling `KayentaCanaryStage.beforeStages` and
+`StageExecutionImpl.mapTo`, and by reading the exact persisted context
+back out of Orca's own MySQL `pipeline_stages` table), the stage fails
+with `Unable to map context to class ...KayentaCanaryContext` — a
+`JsonPointer("/canaryConfig")` resolution that inexplicably returns a
+missing node against a context that demonstrably has that key. Root cause
+never found (see the investigation rounds below); routed around instead,
+per the resolution above.
+
+**Tried and ruled out**: downgrading `config.version` to `2.28.0` to check
+if the bug is version-specific. Never got far enough to retest it —
+`spin-clouddriver` deadlocked on `2.28.0` instead (process alive, port
+7002 completely unresponsive, no log output at all for minutes; `2.34.0`'s
+clouddriver recovered cleanly once reverted). Most likely cause: `2.28.0`'s
+older bundled JDBC driver against this stack's ARM64-substituted
+`mysql:8.0.36` (`mysql_native_password`, patched in for Apple Silicon —
+see the pinned-components table above). Reverted to `2.34.0`, confirmed
+healthy again. If revisiting: attaching a debugger to Orca directly is a
+more promising next step than further version-hopping, since `2.28.0`
+introduces its own incompatibility before the original question can even
+be tested.
+
+**Actuator-debug round (live introspection, no code changes retained)**:
+temporarily patched the `SpinnakerService` CR's `profiles.orca` with
+`management.endpoints.web.exposure.include: "*"` to get live Orca
+introspection (note for next time: this bundled Orca serves actuator
+endpoints at the *root* path, e.g. `http://spin-orca:8083/threaddump`, not
+`/actuator/threaddump` — the base path is `""`, not the Spring Boot
+default). With it live:
+- `/beans` confirms Spring's `objectMapper` bean is not a distinct
+  instance — its `@Bean(name = "objectMapper")` factory method
+  (`WebConfiguration.orcaObjectMapper()`) just returns
+  `OrcaObjectMapper.getInstance()` directly, and `StageExecutionImpl`'s
+  `objectMapper` field is set to that same static singleton in every
+  constructor (confirmed by bytecode). So "a different ObjectMapper bean
+  wired in via DI" is ruled out — there is genuinely only the one
+  singleton in play, live and in the standalone harness alike.
+- Decompiling `MissingNode.asToken()` (jackson-databind 2.13.5) confirms
+  it returns `JsonToken.NOT_AVAILABLE` — so the exact exception text
+  (`Cannot deserialize ... from [Unavailable value] (token
+  JsonToken.NOT_AVAILABLE)`) is Jackson's standard behavior when
+  `ObjectNode.at("/canaryConfig")` resolves to a `MissingNode`, i.e. a
+  plain "key not found at that pointer" — not a value/type mismatch. This
+  confirms (rather than newly discovers) the "missing node" framing
+  already stated above, just traced to its exact Jackson mechanism.
+- DEBUG-level logging on `KayentaCanaryStage`, `StageExecutionImpl`, and
+  `com.fasterxml.jackson.databind` produced no additional log lines beyond
+  the existing WARN/ERROR stack traces — this code path has no
+  debug-level logging to reveal, so DEBUG logging is a dead end here.
+- The stage fails in under 100ms of being started (`beforeStages` runs
+  synchronously before any task), too fast to catch with a polled
+  `/threaddump` from outside the process.
+- Checked whether Orca's SQL execution-body compression feature
+  (`ExecutionCompressionProperties`, default `enabled: false`,
+  1024-byte/ZLIB threshold) could explain large-execution-only corruption,
+  given this pipeline's completed body is ~93KB — confirmed compression is
+  not enabled in this stack's config (`orca-local.yml`/`orca.yml` have no
+  `compression` keys), so ruled out.
+- Net result: this round narrowed the *mechanism* (definitely a JSON
+  Pointer miss, definitely the same singleton ObjectMapper) but did not
+  find why `stage.context`, serialized via `valueToTree()` at the instant
+  `mapTo` runs, lacks the `canaryConfig` key that the post-failure
+  diagnostic dump (captured from the same object, an instant later) does
+  show. Root cause still not found.

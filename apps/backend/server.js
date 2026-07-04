@@ -11,7 +11,7 @@ const httpRequestDurationMicroseconds = new client.Histogram({
   name: 'http_request_duration_seconds',
   help: 'Duration of HTTP requests in seconds',
   labelNames: ['method', 'route', 'code'],
-  buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5]
+  buckets: [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.5, 0.7, 1, 3, 5]
 });
 
 const httpRequestsTotal = new client.Counter({
@@ -20,10 +20,15 @@ const httpRequestsTotal = new client.Counter({
   labelNames: ['method', 'route', 'code']
 });
 
+// Local canary-analysis validation only: unset by default, so this is a
+// no-op everywhere except when a test run deliberately opts in.
+const faultInjectExtraErrorRate = Number(process.env.FAULT_INJECT_5XX_RATE || 0);
+const faultInjectExtraLatencyMs = Number(process.env.FAULT_INJECT_LATENCY_MS || 0);
+
 app.get('/api/hello', (req, res) => {
   const end = httpRequestDurationMicroseconds.startTimer();
 
-  const isError = Math.random() < 0.02;
+  const isError = Math.random() < 0.02 + faultInjectExtraErrorRate;
   setTimeout(() => {
     const code = isError ? 500 : 200;
     if (isError) {
@@ -33,7 +38,7 @@ app.get('/api/hello', (req, res) => {
     }
     end({ method: 'GET', route: '/api/hello', code });
     httpRequestsTotal.inc({ method: 'GET', route: '/api/hello', code });
-  }, Math.random() * 200);
+  }, Math.random() * 200 + faultInjectExtraLatencyMs);
 });
 
 app.get('/metrics', async (req, res) => {

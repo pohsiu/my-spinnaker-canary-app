@@ -12,45 +12,209 @@
   ],
   "stages": [
     {
-      "name": "Deploy Canary & Baseline",
+      "name": "Bake Canary",
       "type": "bakeManifest",
-      "description": "Render the Helm chart and deploy the canary/baseline test groups",
       "refId": "1",
+      "requisiteStageRefIds": [],
       "templateRenderer": "HELM3",
+      "namespace": "spinnaker",
+      "outputName": "canary",
       "overrides": {
         "track": "canary",
-        "image.tag": "${trigger.tag}"
-      }
+        "image.repository": "your-docker-hub-repo/my-web-service",
+        "image.tag": "${trigger.tag}",
+        "env[0].name": "FAULT_INJECT_5XX_RATE",
+        "env[0].value": "${parameters.canaryFaultRate}"
+      },
+      "inputArtifacts": [
+        { "account": "git-repo", "artifact": { "type": "git/repo", "name": "helm", "reference": "REPLACE_WITH_REAL_GIT_ARTIFACT_ACCOUNT" } }
+      ],
+      "expectedArtifacts": [
+        { "id": "canary-manifest", "matchArtifact": { "kind": "custom", "name": "canary", "type": "embedded/base64" }, "useDefaultArtifact": false, "usePriorArtifact": false }
+      ]
     },
     {
-      "name": "Kayenta Canary Analysis",
-      "type": "canaryAnalysis",
+      "name": "Bake Baseline",
+      "type": "bakeManifest",
       "refId": "2",
+      "requisiteStageRefIds": [],
+      "templateRenderer": "HELM3",
+      "namespace": "spinnaker",
+      "outputName": "baseline",
+      "overrides": {
+        "track": "baseline",
+        "image.repository": "your-docker-hub-repo/my-web-service",
+        "image.tag": "${trigger.tag}"
+      },
+      "inputArtifacts": [
+        { "account": "git-repo", "artifact": { "type": "git/repo", "name": "helm", "reference": "REPLACE_WITH_REAL_GIT_ARTIFACT_ACCOUNT" } }
+      ],
+      "expectedArtifacts": [
+        { "id": "baseline-manifest", "matchArtifact": { "kind": "custom", "name": "baseline", "type": "embedded/base64" }, "useDefaultArtifact": false, "usePriorArtifact": false }
+      ]
+    },
+    {
+      "name": "Deploy Canary",
+      "type": "deployManifest",
+      "refId": "3",
       "requisiteStageRefIds": ["1"],
-      "context": {
-        "canaryConfig": {
-          "canaryConfigId": "my-web-service-kayenta-config",
-          "lifetimeDuration": "PT30M",
-          "metricsAccountName": "my-prometheus-account"
-        },
-        "scoreThresholds": {
-          "marginal": "75",
-          "pass": "90"
+      "account": "spinnaker",
+      "cloudProvider": "kubernetes",
+      "source": "artifact",
+      "manifestArtifactAccount": "embedded-artifact",
+      "manifestArtifactId": "canary-manifest",
+      "moniker": { "app": "my-web-service" }
+    },
+    {
+      "name": "Deploy Baseline",
+      "type": "deployManifest",
+      "refId": "4",
+      "requisiteStageRefIds": ["2"],
+      "account": "spinnaker",
+      "cloudProvider": "kubernetes",
+      "source": "artifact",
+      "manifestArtifactAccount": "embedded-artifact",
+      "manifestArtifactId": "baseline-manifest",
+      "moniker": { "app": "my-web-service" }
+    },
+    {
+      "name": "Compute Analysis Window",
+      "type": "evaluateVariables",
+      "refId": "5",
+      "requisiteStageRefIds": ["3", "4"],
+      "variables": [
+        { "key": "startTime", "value": "${T(java.time.Instant).now().toString()}" },
+        { "key": "endTime", "value": "${T(java.time.Instant).now().plusSeconds(150).toString()}" }
+      ]
+    },
+    {
+      "name": "Generate Traffic",
+      "type": "runJob",
+      "refId": "6",
+      "requisiteStageRefIds": ["5"],
+      "account": "spinnaker",
+      "application": "my-web-service",
+      "cloudProvider": "kubernetes",
+      "namespace": "spinnaker",
+      "source": "text",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": { "generateName": "canary-traffic-gen-", "namespace": "spinnaker" },
+        "spec": {
+          "backoffLimit": 0,
+          "template": {
+            "spec": {
+              "restartPolicy": "Never",
+              "containers": [
+                {
+                  "name": "traffic",
+                  "image": "curlimages/curl:8.10.1",
+                  "command": [
+                    "sh", "-c",
+                    "for i in $(seq 1 300); do curl -s -o /dev/null http://my-web-service-canary:3000/api/hello & curl -s -o /dev/null http://my-web-service-baseline:3000/api/hello & if [ $((i % 15)) -eq 0 ]; then wait; sleep 1; fi; done; wait; echo done"
+                  ]
+                }
+              ]
+            }
+          }
         }
       }
     },
     {
-      "name": "Promote to Production",
-      "type": "deployManifest",
-      "refId": "3",
-      "requisiteStageRefIds": ["2"],
-      "description": "After Kayenta passes, roll the change out to production",
-      "manifestArtifactAccount": "kubernetes",
-      "source": "text",
+      "name": "Start Canary Judgement",
+      "type": "webhook",
+      "refId": "7",
+      "requisiteStageRefIds": ["6"],
+      "method": "POST",
+      "url": "http://spin-kayenta:8090/canary/my-web-service-kayenta-config?application=my-web-service&metricsAccountName=prometheus&storageAccountName=minio-canary-store&configurationAccountName=minio-canary-store",
+      "waitForCompletion": false,
+      "payload": {
+        "scopes": {
+          "default": {
+            "controlScope": {
+              "scope": "baseline",
+              "location": "spinnaker",
+              "start": "${#stage('Compute Analysis Window')['outputs']['startTime']}",
+              "end": "${#stage('Compute Analysis Window')['outputs']['endTime']}",
+              "step": 30
+            },
+            "experimentScope": {
+              "scope": "canary",
+              "location": "spinnaker",
+              "start": "${#stage('Compute Analysis Window')['outputs']['startTime']}",
+              "end": "${#stage('Compute Analysis Window')['outputs']['endTime']}",
+              "step": 30
+            }
+          }
+        },
+        "thresholds": { "pass": 90, "marginal": 75 }
+      }
+    },
+    {
+      "name": "Poll Canary Judgement",
+      "type": "webhook",
+      "refId": "8",
+      "requisiteStageRefIds": ["7"],
+      "method": "GET",
+      "url": "http://spin-kayenta:8090/canary/${#stage('Start Canary Judgement')['context']['webhook']['body']['canaryExecutionId']}?application=my-web-service",
+      "waitForCompletion": true,
+      "statusUrlResolution": "getMethod",
+      "statusJsonPath": "$.status",
+      "successStatuses": "succeeded",
+      "terminalStatuses": "terminal",
+      "canceledStatuses": ""
+    },
+    {
+      "name": "Check Canary Score",
+      "type": "checkPreconditions",
+      "refId": "9",
+      "requisiteStageRefIds": ["8"],
+      "preconditions": [
+        {
+          "type": "expression",
+          "failPipeline": true,
+          "context": {
+            "expression": "${ #stage('Poll Canary Judgement')['context']['webhook']['monitor']['body']['result']['judgeResult']['score']['classification'] != 'Fail' }"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bake Production",
+      "type": "bakeManifest",
+      "refId": "10",
+      "requisiteStageRefIds": ["9"],
+      "templateRenderer": "HELM3",
+      "namespace": "spinnaker",
+      "outputName": "production",
       "overrides": {
         "track": "production",
+        "image.repository": "your-docker-hub-repo/my-web-service",
         "image.tag": "${trigger.tag}"
-      }
+      },
+      "inputArtifacts": [
+        { "account": "git-repo", "artifact": { "type": "git/repo", "name": "helm", "reference": "REPLACE_WITH_REAL_GIT_ARTIFACT_ACCOUNT" } }
+      ],
+      "expectedArtifacts": [
+        { "id": "production-manifest", "matchArtifact": { "kind": "custom", "name": "production", "type": "embedded/base64" }, "useDefaultArtifact": false, "usePriorArtifact": false }
+      ]
+    },
+    {
+      "name": "Promote to Production",
+      "type": "deployManifest",
+      "refId": "11",
+      "requisiteStageRefIds": ["10"],
+      "description": "After Kayenta passes, roll the change out to production",
+      "account": "spinnaker",
+      "cloudProvider": "kubernetes",
+      "source": "artifact",
+      "manifestArtifactAccount": "embedded-artifact",
+      "manifestArtifactId": "production-manifest",
+      "moniker": { "app": "my-web-service" }
     }
+  ],
+  "parameterConfig": [
+    { "name": "canaryFaultRate", "default": "0", "required": false }
   ]
 }

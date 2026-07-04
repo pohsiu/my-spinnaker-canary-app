@@ -62,17 +62,29 @@ unused now; safe to ignore or delete.
 
 ## Environment limits when working on this repo
 
-No local Kubernetes cluster, no `kubeconform`, and Docker daemon is
-typically not running — `helm lint`/`helm template` can be verified, but
-rendered manifests can't be schema-validated against a live API server, and
-`docker build` has not been exercised end-to-end. Flag this rather than
-claiming either is fully verified.
+Disk space and Docker daemon availability are **not** fixed constraints —
+they were observed low/unavailable in some sessions and fine in others.
+Always recheck rather than assuming either state:
 
-Disk space has also been observed critically low (~11GB free of ~460GB —
-run `df -h /` to recheck before assuming otherwise), which blocks actually
-running `others/minnaker/` (needs ~30GB). Its manifests, compose file, and
-bootstrap script were verified by other means instead — `kubectl kustomize`
-(manifest rendering against the real pinned upstream), `docker compose
-config` (compose syntax), `shellcheck` (bootstrap script) — not by an
-actual `docker compose up`. See `others/minnaker/README.md`'s "What this
-does NOT do" section before assuming more was verified than that.
+```
+df -h /            # disk free
+docker info         # daemon up?
+```
+
+As of the `integrate-local-spinnaker` change, `others/minnaker/` has been
+run for real against a live Docker daemon with ample disk — not just
+verified structurally. See `others/minnaker/README.md`'s "Local registry,
+app deployment, and Kayenta canary analysis" section for what's now
+actually been exercised end-to-end (local registry, three-track Helm
+deploy, Prometheus scrape, and a real Kayenta canary judgement with both a
+passing and a failing run) versus what's still a known limitation (the
+Orca `kayentaCanary` pipeline stage itself, as opposed to Kayenta's own
+API, has a reproducible bug in this bundled Spinnaker version — see that
+README section before assuming the full `spinnaker/dinghyfile` pipeline
+runs end-to-end unattended).
+
+If a future session finds Docker unavailable or disk critically low
+again, treat that as the current session's environment, not a permanent
+property of this machine — note it, and fall back to structural
+verification (`kubectl kustomize`, `docker compose config`, `helm
+lint`/`helm template`) the way earlier sessions did.

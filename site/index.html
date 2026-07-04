@@ -643,7 +643,9 @@ docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .</code></pre
       <h2 style="max-width:700px">Spinnaker Pipeline-as-Code（Dinghy）</h2>
       <p style="max-width:700px">
         <code>spinnaker/dinghyfile</code> 是宣告式的流水線定義，被 Dinghy 監看並自動同步成
-        Spinnaker 裡的 pipeline——流水線本身也是版本控制的一部分。三個階段：
+        Spinnaker 裡的 pipeline——流水線本身也是版本控制的一部分。實際在
+        <code>others/minnaker/</code> 這個本地 Spinnaker 上驗證跑過、11 個 stage 全部
+        <code>SUCCEEDED</code> 的真實流程：
       </p>
       <div class="flow">
         <div class="flow-step">
@@ -655,32 +657,58 @@ docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .</code></pre
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
         </div>
         <div class="flow-step">
-          <span class="n">STAGE 1</span>
-          <h4>Bake Manifest</h4>
-          <p>用 Helm3 渲染 Chart，以 <code>track: canary</code> 部署新版本。</p>
-        </div>
-        <div class="flow-arrow" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
-        </div>
-        <div class="flow-step gate">
-          <span class="n">STAGE 2 · GATE</span>
-          <h4>Kayenta 分析</h4>
-          <p>30 分鐘觀測窗，比對 canary 與 baseline 指標，算出分數。</p>
+          <span class="n">STAGE 1–2</span>
+          <h4>Bake Canary / Baseline</h4>
+          <p>用 Helm3 渲染 Chart，分別產生 <code>track: canary</code> 與 <code>track: baseline</code> 的 manifest。</p>
         </div>
         <div class="flow-arrow" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
         </div>
         <div class="flow-step">
-          <span class="n">STAGE 3</span>
-          <h4>Promote</h4>
+          <span class="n">STAGE 3–4</span>
+          <h4>Deploy Canary / Baseline</h4>
+          <p>套用上一步渲染出的 manifest，兩組獨立 Pod 同時上線。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step gate">
+          <span class="n">STAGE 5–9 · GATE</span>
+          <h4>Kayenta 分析</h4>
+          <p>算觀測窗 → 打流量 → 呼叫 Kayenta 判定 → 輪詢結果 → 檢查分數。</p>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6"/></svg>
+        </div>
+        <div class="flow-step">
+          <span class="n">STAGE 10–11</span>
+          <h4>Bake & Promote</h4>
           <p>分數通過門檻後，以 <code>track: production</code> 重新部署，完成晉升。</p>
         </div>
       </div>
       <p style="max-width:700px">
-        第二階段是唯一的決策點：分數沒過，流水線就停在這裡，正式環境完全不受影響——
+        中間的 Kayenta 分析是唯一的決策點：分數沒過，流水線就停在這裡，正式環境完全不受影響——
         這正是「金絲雀部署」相對藍綠部署的核心優勢：壞版本只影響一小群 canary Pod，
         而且是被指標主動擋下來的，不需要人工介入。
       </p>
+
+      <div class="callout warn">
+        <span class="label">原生的 Kayenta stage 在測試用的 Spinnaker 版本裡是壞的</span>
+        <code>dinghyfile</code> 原本設計是單一個 <code>kayentaCanary</code> stage 直接呼叫
+        Kayenta，但這個本地驗證用的 Spinnaker 版本（<code>others/minnaker/</code>）裡，
+        這個 stage 在還沒開始執行任何 task 前就會拋出
+        <code>Unable to map context to class KayentaCanaryContext</code>——
+        反編譯 bytecode、直接讀 Orca 的 MySQL 執行紀錄，
+        確認送進去的 JSON 逐欄位都對，還是找不到真正原因，最後判定是這個版本本身的 bug。
+        改成上面 STAGE 5–9 那五步：用 <code>webhook</code> stage 直接呼叫 Kayenta 自己的
+        <code>POST /canary/{canaryConfigId}</code> API 做判定、
+        <code>checkPreconditions</code> 檢查分數決定要不要放行——繞過壞掉的原生整合，
+        但保留一樣的「分數不夠就擋下 promote」行為。
+        實際觸發驗證過兩個方向：健康版本 11 個 stage 全部
+        <code>SUCCEEDED</code>、分數 <strong>100 Pass</strong>；故意注入
+        70% 錯誤率的版本，<code>Check Canary Score</code> 正確攔下流水線，
+        <code>Promote to Production</code> 完全沒有執行到。
+      </div>
     </section>
 
     <section id="kayenta">
@@ -698,18 +726,42 @@ docker build -f apps/backend/Dockerfile -t my-spinnaker-canary-app .</code></pre
           <tbody>
             <tr>
               <td>HTTP 5xx Error Rate</td>
-              <td class="num"><code>rate(http_requests_total{code=~"5.."}[2m])</code></td>
+              <td class="num"><code>sum(rate(http_requests_total{code=~"5.."}[2m])) or vector(0)</code></td>
               <td>canary 上升即扣分（critical）</td>
               <td class="num">100</td>
             </tr>
             <tr>
               <td>HTTP p95 Latency</td>
-              <td class="num"><code>histogram_quantile(0.95, ...)</code></td>
+              <td class="num"><code>histogram_quantile(0.95, sum(rate(...[5m])) by (le))</code></td>
               <td>canary 上升即扣分</td>
               <td class="num">100</td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="callout warn">
+        <span class="label">PromQL 寫法在實測前後差很多</span>
+        兩個查詢都跟一開始設計的版本不一樣，都是實際跑判定、讀 Kayenta 丟回來的錯誤才發現的：
+        這個版本的 Kayenta 已經棄用 <code>customFilter</code> 欄位，要改用
+        <code>customInlineTemplate</code> 並加上 <code>PromQL:</code> 前綴才會被當成完整查詢，
+        而不是被套進另一層預設的 <code>avg(metricName{...})</code> 樣板裡（反編譯
+        <code>PrometheusMetricsService.buildQuery</code> 才確認前綴的規則，錯誤訊息本身沒講）；
+        5xx 錯誤率則要包一層 <code>sum(...) or vector(0)</code>——沒有這層，某個 Pod
+        在觀測窗裡完全沒發生 5xx 時，Prometheus 對那個 label 組合根本沒有任何時間序列
+        （不是回傳 0，是完全沒有資料點），Kayenta 會把它判成 <code>NODATA</code>
+        而不是「錯誤率是 0」。
+      </div>
+      <div class="callout">
+        <span class="label">Histogram bucket 太粗會讓判定變得過度敏感</span>
+        p95 延遲一開始連續兩次對完全相同的 canary/baseline 影像判定成
+        <span class="status-pill fail">FAIL</span>——不是 bug，是
+        <code>apps/backend/server.js</code> 的 histogram bucket
+        （<code>[0.1, 0.3, 0.5, ...]</code>）對這個 app 實際 0–200ms 的延遲範圍太粗，
+        全部落在同一個區間，<code>histogram_quantile</code> 內插後方差被壓得極低，
+        一點點雜訊就會被判定成統計顯著。改成更細的 bucket
+        （<code>[0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, ...]</code>）之後，
+        相同的健康版本才穩定判定 <span class="status-pill pass">PASS</span>。
       </div>
       <p>綜合分數對應三種結果，門檻寫在 <code>dinghyfile</code> 裡：</p>
       <div class="table-wrap">
