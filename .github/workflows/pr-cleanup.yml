@@ -1,0 +1,44 @@
+name: PR Preview Cleanup
+
+# Tears down a PR's preview environment on close — merged or not, either
+# way the ephemeral environment is stale. No fork guard needed here (there
+# is nothing to clean up for a PR that never got a preview deployed), but
+# skipping cleanly when KUBE_CONFIG is unset or the release doesn't exist
+# matters: pr-preview.yml's deploy job requires manual approval, so a
+# closed PR may never have actually deployed anything.
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check cluster credentials are configured
+        id: check
+        run: |
+          if [ -z "${{ secrets.KUBE_CONFIG }}" ]; then
+            echo "::warning::KUBE_CONFIG secret is not set — nothing to clean up against (no cluster configured yet). Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up kubeconfig
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Set up Helm
+        if: steps.check.outputs.skip == 'false'
+        uses: azure/setup-helm@v4
+
+      - name: Uninstall PR environment
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          RELEASE="pr-${{ github.event.pull_request.number }}"
+          # Tolerate "release not found": the deploy job requires manual
+          # approval, so a closed PR may never have been approved/deployed.
+          helm uninstall "$RELEASE" || echo "No release named $RELEASE found — nothing to remove."

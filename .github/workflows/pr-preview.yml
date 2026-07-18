@@ -1,0 +1,116 @@
+name: PR Preview
+
+# Builds an image for every same-repo PR, then deploys it as an isolated,
+# approval-gated preview environment. Fork PRs are excluded outright (they
+# don't get repo secrets by default, and pull_request_target — which would
+# restore that access — runs untrusted PR code with base-repo permissions,
+# a well-known GitHub Actions security footgun this repo isn't taking on).
+#
+# PR-scoping reuses the Helm chart's existing `{{ .Release.Name }}-
+# {{ .Values.track }}` naming as-is (release name = pr-<number>) — no
+# chart changes needed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/my-spinnaker-canary-app
+
+jobs:
+  build:
+    # Fork guard: pull_request from a fork has this evaluate false, and
+    # every downstream job in this workflow depends (transitively) on
+    # build, so the whole workflow is a no-op for fork PRs.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.value }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short "${{ github.event.pull_request.head.sha }}")
+          echo "value=pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/backend/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # This is the approval gate: GitHub pauses the job here until a
+    # required reviewer on the "pr-preview" Environment approves it (set
+    # up in repo Settings > Environments — see .github/workflows/README.md).
+    environment: pr-preview
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check cluster credentials are configured
+        run: |
+          if [ -z "${{ secrets.KUBE_CONFIG }}" ]; then
+            echo "::error::KUBE_CONFIG secret is not set — no cluster is configured for PR previews yet. This is expected until a real cluster is provisioned (see design.md's Non-Goals); this step fails loudly on purpose instead of letting helm/kubectl fail with a confusing connection error."
+            exit 1
+          fi
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy PR environment
+        id: deploy
+        run: |
+          RELEASE="pr-${{ github.event.pull_request.number }}"
+          helm upgrade --install "$RELEASE" helm/ \
+            --set track=canary \
+            --set image.tag="${{ needs.build.outputs.image-tag }}"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Comment access instructions on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const release = "pr-${{ github.event.pull_request.number }}";
+            const body = [
+              `**Preview environment deployed:** \`${release}\``,
+              "",
+              "No public URL exists for PR previews yet — reach it with:",
+              "```bash",
+              `kubectl port-forward svc/${release}-canary 3000:3000`,
+              "```",
+              "Then open http://localhost:3000",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

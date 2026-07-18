@@ -5,8 +5,8 @@
     {
       "enabled": true,
       "type": "docker",
-      "registry": "index.docker.io",
-      "repository": "your-docker-hub-repo/my-web-service",
+      "registry": "ghcr.io",
+      "repository": "ghcr.io/pohsiu/my-spinnaker-canary-app",
       "tag": ""
     }
   ],
@@ -21,7 +21,7 @@
       "outputName": "canary",
       "overrides": {
         "track": "canary",
-        "image.repository": "your-docker-hub-repo/my-web-service",
+        "image.repository": "ghcr.io/pohsiu/my-spinnaker-canary-app",
         "image.tag": "${trigger.tag}",
         "env[0].name": "FAULT_INJECT_5XX_RATE",
         "env[0].value": "${parameters.canaryFaultRate}"
@@ -43,7 +43,7 @@
       "outputName": "baseline",
       "overrides": {
         "track": "baseline",
-        "image.repository": "your-docker-hub-repo/my-web-service",
+        "image.repository": "ghcr.io/pohsiu/my-spinnaker-canary-app",
         "image.tag": "${trigger.tag}"
       },
       "inputArtifacts": [
@@ -190,7 +190,7 @@
       "outputName": "production",
       "overrides": {
         "track": "production",
-        "image.repository": "your-docker-hub-repo/my-web-service",
+        "image.repository": "ghcr.io/pohsiu/my-spinnaker-canary-app",
         "image.tag": "${trigger.tag}"
       },
       "inputArtifacts": [
