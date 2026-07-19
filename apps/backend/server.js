@@ -2,6 +2,8 @@ const path = require('path');
 const express = require('express');
 const client = require('prom-client');
 
+// Trivial change to verify build-and-push.yml fires on push to main.
+
 const app = express();
 const port = process.env.PORT || 3000;
 
